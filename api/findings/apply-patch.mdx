@@ -1,0 +1,199 @@
+---
+title: "Apply Patch"
+api: "POST /api/findings/{id}/apply-patch"
+description: "Mark a security patch as applied for a finding"
+---
+
+Apply the suggested patch for a security finding. This operation marks the patch as applied and creates an audit event to track who applied it and when.
+
+<Note>
+  This endpoint requires authentication. The authenticated user will be recorded as the person who applied the patch.
+</Note>
+
+<Warning>
+  This endpoint only marks the patch as applied in Heimdall's database. It does not automatically modify your source code. You must apply the actual code changes separately.
+</Warning>
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique UUID of the finding whose patch should be applied
+</ParamField>
+
+## Patch Application Process
+
+When you call this endpoint, Heimdall performs the following steps:
+
+1. **Validates the finding exists** - Ensures the specified finding ID is valid
+2. **Retrieves the latest patch** - Fetches the most recent patch associated with this finding
+3. **Checks patch status** - Verifies the patch hasn't already been applied
+4. **Marks patch as applied** - Updates the patch record with the applied status and user ID
+5. **Creates audit event** - Records a `patch_applied` event for tracking
+
+<Info>
+  Each finding can have multiple patches generated over time. This endpoint always applies the most recent patch.
+</Info>
+
+## Response
+
+Returns information about the applied patch and the audit event that was created.
+
+<ResponseField name="data" type="object">
+  <Expandable title="Response Properties">
+    <ResponseField name="finding_id" type="string">
+      UUID of the finding whose patch was applied
+    </ResponseField>
+    
+    <ResponseField name="patch_id" type="string">
+      UUID of the patch that was marked as applied
+    </ResponseField>
+    
+    <ResponseField name="applied_by" type="string">
+      UUID of the user who applied the patch
+    </ResponseField>
+    
+    <ResponseField name="event" type="object">
+      The audit event created to track this operation
+      
+      <Expandable title="Event Properties">
+        <ResponseField name="id" type="string">
+          Unique identifier for the event
+        </ResponseField>
+        
+        <ResponseField name="finding_id" type="string">
+          UUID of the associated finding
+        </ResponseField>
+        
+        <ResponseField name="user_id" type="string">
+          UUID of the user who applied the patch
+        </ResponseField>
+        
+        <ResponseField name="event_type" type="string">
+          Always `patch_applied` for this operation
+        </ResponseField>
+        
+        <ResponseField name="old_value" type="string" nullable>
+          Always `null` for patch application events
+        </ResponseField>
+        
+        <ResponseField name="new_value" type="string">
+          The UUID of the patch that was applied
+        </ResponseField>
+        
+        <ResponseField name="comment" type="string" nullable>
+          Optional comment about the patch application
+        </ResponseField>
+        
+        <ResponseField name="metadata" type="object" nullable>
+          Additional structured data about the event
+        </ResponseField>
+        
+        <ResponseField name="created_at" type="string">
+          ISO 8601 timestamp when the patch was applied
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "success": true,
+  "data": {
+    "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+    "patch_id": "789e1234-e89b-12d3-a456-426614174333",
+    "applied_by": "555e5555-e89b-12d3-a456-426614175555",
+    "event": {
+      "id": "987e6543-e89b-12d3-a456-426614174999",
+      "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+      "user_id": "555e5555-e89b-12d3-a456-426614175555",
+      "event_type": "patch_applied",
+      "old_value": null,
+      "new_value": "789e1234-e89b-12d3-a456-426614174333",
+      "comment": null,
+      "metadata": null,
+      "created_at": "2026-03-12T15:45:00Z"
+    }
+  }
+}
+```
+</ResponseExample>
+
+## Error Responses
+
+### 404 Not Found - Finding Not Found
+
+Returned when the specified finding does not exist.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "Finding '123e4567-e89b-12d3-a456-426614174000' not found"
+}
+```
+
+### 404 Not Found - No Patch Available
+
+Returned when no patch exists for the finding.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "No patch available for finding '123e4567-e89b-12d3-a456-426614174000'"
+}
+```
+
+### 409 Conflict
+
+Returned when attempting to apply a patch that has already been applied.
+
+```json
+{
+  "success": false,
+  "code": 409,
+  "message": "Patch has already been applied"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when the patch application fails or the event cannot be recorded.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to apply patch: database connection error"
+}
+```
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Patch applied but failed to record event: database error"
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Review the patch first">
+    Use the [Get Finding](/api/findings/get) endpoint to retrieve the `suggested_patch` field and review the proposed changes before applying.
+  </Step>
+  
+  <Step title="Apply code changes">
+    Manually apply the patch to your source code or use your preferred patching tool. This endpoint does not modify your code automatically.
+  </Step>
+  
+  <Step title="Mark as applied">
+    Call this endpoint to record that the patch has been applied, enabling proper tracking and audit trails.
+  </Step>
+  
+  <Step title="Verify the fix">
+    After applying the patch, consider running a new scan to verify the vulnerability has been resolved.
+  </Step>
+</Steps>

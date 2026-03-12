@@ -1,0 +1,158 @@
+---
+title: GitHub Integration
+description: Connect repositories and set up webhooks with GitHub OAuth
+---
+
+Heimdall integrates with GitHub using OAuth 2.0 for seamless repository access and webhook-triggered scans.
+
+## OAuth App Setup
+
+To enable GitHub integration, create a GitHub OAuth App:
+
+1. Go to **GitHub Settings** → **Developer settings** → **OAuth Apps** → **New OAuth App**
+2. Fill in the application details:
+   - **Application name**: `Heimdall Security Scanner` (or your preferred name)
+   - **Homepage URL**: `http://localhost:8080` (or your deployment URL)
+   - **Authorization callback URL**: `http://localhost:8080/api/auth/github/callback`
+3. Click **Register application**
+4. Copy the **Client ID** and generate a **Client Secret**
+
+### Environment Configuration
+
+Add the following to your `.env` file:
+
+```bash
+GITHUB_CLIENT_ID=your_client_id_here
+GITHUB_CLIENT_SECRET=your_client_secret_here
+GITHUB_REDIRECT_URI=http://localhost:8080/api/auth/github/callback
+```
+
+<Warning>
+For production deployments, update `GITHUB_REDIRECT_URI` to match your public domain (e.g., `https://heimdall.example.com/api/auth/github/callback`).
+</Warning>
+
+## Repository Connection
+
+Once OAuth is configured, users can connect their GitHub repositories:
+
+### Authorization Flow
+
+1. Navigate to **Repositories** → **Connect Repository**
+2. Click **Connect with GitHub**
+3. Authorize Heimdall to access your repositories
+4. Select the repository you want to scan
+
+### OAuth Scopes
+
+Heimdall requests the following GitHub scopes:
+
+| Scope | Purpose |
+|-------|--------|
+| `read:user` | Read basic user profile information |
+| `user:email` | Access verified email addresses |
+| `repo` | Access private repositories for cloning |
+
+### Linking to Existing Accounts
+
+If you already have a Heimdall account (email/password), the GitHub OAuth flow will:
+
+- **Match by email**: If your GitHub email matches an existing Heimdall account, the GitHub connection is linked to that account
+- **Create new account**: If no match is found, a new account is created using your GitHub profile
+- **Prevent conflicts**: If the GitHub account is already linked to another user, you'll be redirected with an error
+
+See [src/routes/auth.rs:934-958](~/workspace/source/src/routes/auth.rs) for the account linking logic.
+
+## Webhook Configuration
+
+Webhooks enable automatic scans when you push to GitHub.
+
+### Setting Up Webhooks
+
+1. Generate a webhook secret:
+   ```bash
+   openssl rand -hex 20
+   ```
+
+2. Add to your `.env`:
+   ```bash
+   WEBHOOK_SECRET=your_generated_secret_here
+   ```
+
+3. In your GitHub repository, go to **Settings** → **Webhooks** → **Add webhook**
+
+4. Configure the webhook:
+   - **Payload URL**: `https://heimdall.example.com/webhooks/github`
+   - **Content type**: `application/json`
+   - **Secret**: The same value as `WEBHOOK_SECRET` from step 1
+   - **SSL verification**: Enable (recommended)
+
+5. Select events:
+   - Choose **Just the push event** (only `push` events trigger scans)
+
+6. Click **Add webhook**
+
+### Signature Verification
+
+Heimdall verifies all incoming webhooks using HMAC-SHA256 signature validation:
+
+- GitHub sends the signature in the `X-Hub-Signature-256` header
+- Heimdall computes the expected signature using your `WEBHOOK_SECRET`
+- Mismatched signatures return `401 Unauthorized`
+
+See [src/routes/webhooks.rs:327-343](~/workspace/source/src/routes/webhooks.rs) for the verification implementation.
+
+### Supported Events
+
+Currently supported:
+
+| Event | Description | Action |
+|-------|-------------|--------|
+| `push` | Code pushed to a branch | Triggers full scan at the pushed commit SHA |
+
+Other event types (e.g., `pull_request`, `issues`) are accepted but ignored with a `200 OK` response.
+
+## Issue Integration
+
+<Note>
+GitHub Issues integration is planned for a future release. Track progress in the roadmap.
+</Note>
+
+## Troubleshooting
+
+### OAuth Flow Fails
+
+**Symptom**: Redirected to login page after authorizing GitHub
+
+**Solutions**:
+- Verify `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` match your OAuth app
+- Check that `GITHUB_REDIRECT_URI` exactly matches the callback URL in GitHub settings (including protocol and trailing path)
+- Ensure your server is reachable at the redirect URI
+
+### Webhook Deliveries Fail
+
+**Symptom**: GitHub shows "Failed to deliver" in webhook delivery history
+
+**Solutions**:
+- Check the **Recent Deliveries** tab for error details
+- Verify `WEBHOOK_SECRET` matches between GitHub and Heimdall
+- Ensure `/webhooks/github` endpoint is publicly accessible (no auth required)
+- Review Heimdall logs: `docker compose logs -f heimdall | grep webhook`
+
+### Repository Not Found After OAuth
+
+**Symptom**: Connected GitHub but repository doesn't appear
+
+**Solutions**:
+- Verify the repository matches the `clone_url` from the push webhook
+- Check database: `SELECT * FROM repos WHERE remote_url LIKE '%github.com%';`
+- Re-connect the repository through the UI
+
+## API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/auth/github/authorize` | `GET` | Initiate GitHub OAuth flow |
+| `/api/auth/github/callback` | `GET` | OAuth callback (called by GitHub) |
+| `/webhooks/github` | `POST` | GitHub webhook receiver (public) |
+
+See [API Reference](/api/authentication/oauth) for full details.

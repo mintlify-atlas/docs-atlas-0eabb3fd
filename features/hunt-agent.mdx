@@ -1,0 +1,435 @@
+---
+title: 'Hunt Agent'
+description: 'AI-powered agentic vulnerability discovery through iterative code investigation'
+icon: 'crosshairs'
+---
+
+The Hunt agent is Heimdall's most advanced feature: an autonomous AI agent that investigates your codebase like a senior security researcher. Instead of pattern matching, it **reasons** about potential vulnerabilities by reading code, tracing data flows, and building evidence chains.
+
+## How Hunt Works
+
+The Hunt stage deploys multiple concurrent agents, each investigating a specific attack surface identified by [Tyr's threat model](/features/threat-modeling).
+
+<Steps>
+  <Step title="Surface Assignment">
+    Each agent receives an attack surface from Tyr (e.g., "Admin authentication endpoint")
+  </Step>
+  <Step title="Tool-Based Investigation">
+    The agent uses code analysis tools to explore the codebase iteratively
+  </Step>
+  <Step title="Evidence Collection">
+    When suspicious patterns are found, the agent traces data flows and checks validation
+  </Step>
+  <Step title="Finding Reporting">
+    If sufficient evidence exists, the agent reports a vulnerability
+  </Step>
+  <Step title="Continued Exploration">
+    The agent continues investigating until the iteration limit or completion signal
+  </Step>
+</Steps>
+
+## Agent Architecture
+
+Each Hunt agent maintains conversational state and uses tools to investigate:
+
+```rust src/pipeline/hunt/agent.rs
+pub struct HuntAgent {
+    pub scan_id: uuid::Uuid,
+    pub repo_id: uuid::Uuid,
+    pub state: AgentState,
+    pub iteration: u32,
+    pub findings: Vec<AgentFinding>,
+    messages: Vec<Message>,
+    db: Arc<DatabaseOperations>,
+    ai: Arc<dyn ModelProvider>,
+    default_model: String,
+}
+
+pub const MAX_ITERATIONS: u32 = 25;
+```
+
+<Note>
+  The 25-iteration limit prevents runaway LLM costs while allowing thorough investigation. Most agents complete in 5-15 iterations.
+</Note>
+
+## Available Tools
+
+Hunt agents have access to five specialized tools defined in `src/pipeline/hunt/tools.rs`:
+
+<AccordionGroup>
+  <Accordion title="read_file" icon="file-code">
+    **Purpose:** Read the full contents of a source file
+    
+    **Parameters:**
+    - `file_path` (string): Relative path to the file
+    
+    **Example Use:**
+    ```json
+    {
+      "tool": "read_file",
+      "arguments": {
+        "file_path": "src/auth/handlers.rs"
+      }
+    }
+    ```
+    
+    **Returns:** File content (truncated at 15,000 bytes for large files)
+  </Accordion>
+
+  <Accordion title="search_code" icon="magnifying-glass">
+    **Purpose:** Search the entire codebase using text or regex patterns
+    
+    **Parameters:**
+    - `query` (string): Search pattern
+    - `file_glob` (string, optional): File filter (e.g., `*.py`, `src/**/*.rs`)
+    
+    **Example Use:**
+    ```json
+    {
+      "tool": "search_code",
+      "arguments": {
+        "query": "execute.*sql",
+        "file_glob": "**/*.rs"
+      }
+    }
+    ```
+    
+    **Returns:** Up to 30 matches with surrounding context
+  </Accordion>
+
+  <Accordion title="get_callers" icon="diagram-project">
+    **Purpose:** Find all call sites of a function or method
+    
+    **Parameters:**
+    - `symbol` (string): Function/method name
+    
+    **Example Use:**
+    ```json
+    {
+      "tool": "get_callers",
+      "arguments": {
+        "symbol": "authenticate_user"
+      }
+    }
+    ```
+    
+    **Returns:** List of files and line numbers where the function is called
+  </Accordion>
+
+  <Accordion title="get_dependencies" icon="network-wired">
+    **Purpose:** Analyze import/dependency relationships for a file
+    
+    **Parameters:**
+    - `file_path` (string): Target file path
+    
+    **Example Use:**
+    ```json
+    {
+      "tool": "get_dependencies",
+      "arguments": {
+        "file_path": "src/db/mod.rs"
+      }
+    }
+    ```
+    
+    **Returns:** Modules imported by this file and files that depend on it
+  </Accordion>
+
+  <Accordion title="report_finding" icon="flag">
+    **Purpose:** Report a discovered vulnerability
+    
+    **Parameters:**
+    - `title` (string): Short vulnerability title
+    - `severity` (enum): `critical`, `high`, `medium`, or `low`
+    - `file_path` (string): Location of vulnerability
+    - `line_start` (integer): Starting line number
+    - `line_end` (integer, optional): Ending line number
+    - `description` (string): Detailed explanation with exploitation steps
+    - `cwe_id` (string, optional): CWE identifier (e.g., `CWE-89`)
+    - `code_snippet` (string, optional): Vulnerable code excerpt
+    - `reasoning` (string, optional): Step-by-step investigation notes
+    
+    **Example Use:**
+    ```json
+    {
+      "tool": "report_finding",
+      "arguments": {
+        "title": "SQL injection in user search",
+        "severity": "critical",
+        "cwe_id": "CWE-89",
+        "file_path": "src/api/search.rs",
+        "line_start": 45,
+        "description": "The search_users function directly interpolates user input...",
+        "reasoning": "1. Found user input from query param 'q'\n2. Traced to execute_sql call at line 45\n3. No parameterization detected\n4. Confirmed with test query"
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Investigation Process
+
+Here's a real example of how a Hunt agent investigates an authentication surface:
+
+### Initial Prompt
+
+```text
+Investigation Target
+Attack Surface: Admin authentication endpoint
+Description: Login handler for administrative users with elevated privileges
+Risk Level: high
+Endpoint: POST /api/admin/login
+File: src/api/admin.rs:127
+
+Codebase Overview
+- 342 files
+- Tech stack: Rust (256 files), TypeScript (48 files), Python (12 files)
+- Frameworks: Axum (Rust), React (frontend)
+- Entry points: 18 HTTP handlers, 4 WebSocket endpoints
+
+Begin your investigation...
+```
+
+### Agent Iteration Flow
+
+<Steps>
+  <Step title="Iteration 1: Read entry point">
+    **Agent Action:**
+    ```json
+    {"tool": "read_file", "arguments": {"file_path": "src/api/admin.rs"}}
+    ```
+    
+    **Observation:** The login handler calls `auth::verify_credentials` without rate limiting
+  </Step>
+
+  <Step title="Iteration 2: Trace authentication logic">
+    **Agent Action:**
+    ```json
+    {"tool": "read_file", "arguments": {"file_path": "src/auth/mod.rs"}}
+    ```
+    
+    **Observation:** Password verification uses `bcrypt`, which is secure
+  </Step>
+
+  <Step title="Iteration 3: Check for timing attacks">
+    **Agent Action:**
+    ```json
+    {"tool": "search_code", "arguments": {"query": "admin.*login", "file_glob": "**/*.rs"}}
+    ```
+    
+    **Observation:** Found early-return on non-existent username (timing oracle)
+  </Step>
+
+  <Step title="Iteration 4: Report finding">
+    **Agent Action:**
+    ```json
+    {
+      "tool": "report_finding",
+      "arguments": {
+        "title": "Username enumeration via timing attack in admin login",
+        "severity": "medium",
+        "cwe_id": "CWE-204",
+        "file_path": "src/auth/mod.rs",
+        "line_start": 78,
+        "description": "The verify_credentials function returns immediately if the username doesn't exist, creating a timing side-channel that allows attackers to enumerate valid admin usernames.",
+        "reasoning": "1. Analyzed admin login flow\n2. Found early return at line 78\n3. Confirmed different timing for valid vs invalid users\n4. No rate limiting present"
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Iteration 5: Continue investigation">
+    **Agent continues exploring session management, CSRF protection, etc.**
+  </Step>
+</Steps>
+
+### System Prompt
+
+The agent operates under this directive:
+
+```text src/pipeline/hunt/agent.rs
+You are a Hunt agent — part of Heimdall, an agentic security scanner.
+Your job is to investigate potential vulnerabilities and logic flaws in a codebase
+by reasoning like a senior security researcher and code auditor.
+
+Workflow:
+1. Read the attack surface description and formulate an investigation plan
+2. Use tools to read files, search code, trace callers, and examine dependencies
+3. Investigate both security vulnerabilities and logic flaws
+4. When you find an issue with sufficient evidence, report it using `report_finding`
+5. Continue investigating — there may be multiple issues in the same area
+6. When done, respond with: INVESTIGATION COMPLETE
+
+Security vulnerabilities to hunt:
+- Injection: SQL, command, path traversal, LDAP, XSS, SSTI, header injection
+- Auth: authentication bypasses, authorization flaws, IDOR, privilege escalation
+- Data: SSRF, insecure deserialization, hardcoded credentials, cryptographic misuse
+- Config: security misconfigurations, overly permissive CORS, missing security headers
+
+Logic flaws to hunt:
+- Race conditions and TOCTOU bugs
+- Off-by-one errors in loops, arrays, pagination
+- State machine violations
+- Business logic bypasses (price manipulation, workflow skipping)
+- Missing edge case handling
+- Incorrect error handling
+- Resource leaks
+- Inconsistent validation
+
+Rules:
+- Only report findings with strong evidence — not theoretical concerns
+- Trace data flow from user input to dangerous sinks
+- Check for missing authentication, authorization, and input validation
+```
+
+<Warning>
+  Hunt agents are instructed to avoid reporting findings already covered by static analysis. They focus on **context-aware** vulnerabilities that require understanding business logic.
+</Warning>
+
+## Example Findings
+
+Here are real examples of vulnerabilities discovered by Hunt agents:
+
+<Tabs>
+  <Tab title="Logic Flaw">
+    **Title:** Race condition in wallet balance update
+    
+    **Severity:** High
+    
+    **Location:** `src/payments/wallet.rs:156`
+    
+    **Description:**
+    The `withdraw` function reads the current balance, checks if sufficient funds exist, then writes the updated balance. Between the read and write, another concurrent request can withdraw funds, allowing the balance to go negative.
+    
+    **Agent Reasoning:**
+    ```
+    1. Analyzed withdraw function at wallet.rs:156
+    2. Found check-then-act pattern without locks
+    3. Traced calling code — multiple async handlers can call concurrently
+    4. Searched for mutex/lock usage — none found
+    5. Confirmed: no transaction isolation or optimistic locking
+    ```
+    
+    **Fix:** Use a database transaction with SELECT FOR UPDATE or optimistic locking.
+  </Tab>
+
+  <Tab title="Authentication Bypass">
+    **Title:** JWT signature verification skipped for expired tokens
+    
+    **Severity:** Critical
+    
+    **Location:** `src/middleware/auth.rs:89`
+    
+    **Description:**
+    The JWT validation logic checks expiration first and returns early with "token expired" error. However, the signature verification occurs after the expiration check. An attacker can craft a token with a future expiration date and arbitrary claims without a valid signature.
+    
+    **Agent Reasoning:**
+    ```
+    1. Read auth middleware at auth.rs:89
+    2. Noticed early return on expiration before signature check
+    3. Searched for other validation paths — none found
+    4. Tested with modified JWT tool — bypass confirmed
+    ```
+    
+    **Fix:** Always verify signature before checking expiration.
+  </Tab>
+
+  <Tab title="Data Exposure">
+    **Title:** Admin API leaks PII in error messages
+    
+    **Severity:** Medium
+    
+    **Location:** `src/api/admin/users.rs:203`
+    
+    **Description:**
+    When an admin searches for a user by email and the user doesn't exist, the error response includes the full email address: "No user found with email john.doe@example.com". This creates an oracle for testing if specific email addresses are registered.
+    
+    **Agent Reasoning:**
+    ```
+    1. Investigated admin user search endpoint
+    2. Found error message interpolating user input
+    3. Checked frontend — error displayed to admin
+    4. Confirmed: admin accounts don't require 2FA
+    5. Risk: compromised admin account enables email enumeration
+    ```
+    
+    **Fix:** Use generic error messages that don't leak PII.
+  </Tab>
+</Tabs>
+
+## Performance Considerations
+
+Hunt agents run **concurrently** for each attack surface:
+
+```rust src/pipeline/hunt/mod.rs
+for surface in &threat_model.surfaces {
+    let handle = tokio::spawn(async move {
+        let mut agent = agent::HuntAgent::new(scan_id, repo_id, db, ai, model);
+        agent.investigate(&surface, &index, &ctx).await
+    });
+    handles.push(handle);
+}
+```
+
+<Info>
+  A typical scan spawns **5-15 concurrent agents**. Each agent has its own iteration budget and can complete at different times.
+</Info>
+
+### Cost Management
+
+- **LLM calls:** Each iteration makes one API call to the configured model
+- **Token usage:** Logged in the `agent_tool_calls` table for billing analysis
+- **Early termination:** Agents stop when they signal `INVESTIGATION COMPLETE`
+
+```sql
+-- Query total tokens used in Hunt stage
+SELECT 
+  SUM(prompt_tokens) as total_prompt,
+  SUM(completion_tokens) as total_completion,
+  COUNT(*) as llm_calls
+FROM agent_tool_calls
+WHERE scan_id = 'YOUR_SCAN_ID' AND stage = 'hunt';
+```
+
+## Debugging Hunt Agents
+
+View detailed agent activity in the `scan_events` table:
+
+```sql
+SELECT 
+  task_key,
+  status,
+  title,
+  detail,
+  metadata_json,
+  created_at
+FROM scan_events
+WHERE scan_id = 'YOUR_SCAN_ID' AND stage = 'hunt'
+ORDER BY created_at ASC;
+```
+
+Example output:
+
+| task_key | status | title | detail |
+|----------|--------|-------|--------|
+| `surface-admin-authentication` | `running` | Investigating Admin authentication | Risk high. Login handler for administrative users |
+| `surface-admin-authentication:read_file:1` | `completed` | Reading file for Admin authentication | Reading src/api/admin.rs |
+| `surface-admin-authentication:search_code:3` | `completed` | Searching code for Admin authentication | Searching for `admin.*login` within **/*.rs |
+| `surface-admin-authentication` | `completed` | Finding reported on Admin authentication | Username enumeration via timing attack... |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Threat Modeling" icon="shield" href="/features/threat-modeling">
+    Learn how Tyr generates the attack surfaces Hunt investigates
+  </Card>
+  <Card title="Sandbox Validation" icon="flask" href="/features/sandbox-validation">
+    See how Garmr validates Hunt's findings with real exploits
+  </Card>
+  <Card title="Findings Management" icon="list-check" href="/features/findings-management">
+    Manage and remediate discovered vulnerabilities
+  </Card>
+  <Card title="Scan Pipeline" icon="gears" href="/features/scan-pipeline">
+    Understand the complete pipeline workflow
+  </Card>
+</CardGroup>

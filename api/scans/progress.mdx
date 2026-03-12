@@ -1,0 +1,228 @@
+---
+title: "Stream Scan Progress"
+api: "GET /api/scans/{id}/progress/stream"
+description: "Subscribe to real-time scan progress updates via Server-Sent Events (SSE)"
+---
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier (UUID) of the scan to monitor
+</ParamField>
+
+## Response
+
+This endpoint returns a Server-Sent Events (SSE) stream that sends real-time updates about the scan progress.
+
+### Connection Details
+
+- **Content-Type**: `text/event-stream`
+- **Cache-Control**: `no-cache`
+- **Connection**: Keep-alive stream
+- **Keepalive Interval**: 15 seconds
+
+### Initial State
+
+When you first connect, the endpoint sends the current scan state fetched from the database, including:
+- Current scan status and finding counts
+- Status of all scan stages (ingest, tyr, static_analysis, etc.)
+- Any error messages if the scan has failed
+
+### Event Types
+
+The stream emits the following event types:
+
+<ResponseField name="status_change" type="event">
+  Emitted when the overall scan status changes
+  
+  **Data fields:**
+  - `scan_id` (string): The scan UUID
+  - `status` (string): New status value
+  - `timestamp` (string): ISO 8601 timestamp
+  - `finding_count` (integer): Total findings discovered
+  - `critical` (integer): Critical severity count
+  - `high` (integer): High severity count
+  - `medium` (integer): Medium severity count
+  - `low` (integer): Low severity count
+</ResponseField>
+
+<ResponseField name="stage_update" type="event">
+  Emitted when a scan stage (e.g., ingest, hunt, garmr) changes status
+  
+  **Data fields:**
+  - `scan_id` (string): The scan UUID
+  - `stage` (string): Stage name (e.g., "ingest", "tyr", "hunt")
+  - `status` (string): Stage status ("pending", "running", "completed", "failed")
+  - `timestamp` (string): ISO 8601 timestamp
+  - `error` (string, optional): Error message if stage failed
+</ResponseField>
+
+<ResponseField name="finding_added" type="event">
+  Emitted when a new vulnerability finding is discovered
+  
+  **Data fields:**
+  - `scan_id` (string): The scan UUID
+  - `finding_id` (string): The finding UUID
+  - `title` (string): Brief title of the vulnerability
+  - `severity` (string): Severity level ("critical", "high", "medium", "low")
+</ResponseField>
+
+<ResponseField name="scan_complete" type="event">
+  Emitted when the scan finishes successfully. This is a terminal event - the stream will close after sending it.
+  
+  **Data fields:**
+  - `scan_id` (string): The scan UUID
+  - `finding_count` (integer): Total findings discovered
+  - `critical` (integer): Critical severity count
+  - `high` (integer): High severity count
+  - `medium` (integer): Medium severity count
+  - `low` (integer): Low severity count
+  - `timestamp` (string): ISO 8601 timestamp
+</ResponseField>
+
+<ResponseField name="error" type="event">
+  Emitted when the scan fails. This is a terminal event - the stream will close after sending it.
+  
+  **Data fields:**
+  - `scan_id` (string): The scan UUID
+  - `error` (string): Error message describing what went wrong
+  - `timestamp` (string): ISO 8601 timestamp
+</ResponseField>
+
+### SSE Format
+
+Events follow the standard SSE format:
+
+```
+event: status_change
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","status":"running","timestamp":"2026-03-12T10:00:00Z"}
+
+event: stage_update
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","stage":"ingest","status":"running","timestamp":"2026-03-12T10:00:05Z"}
+
+: keepalive
+
+```
+
+### Keepalive Messages
+
+The server sends keepalive comments (`: keepalive\n\n`) every 15 seconds to prevent connection timeouts.
+
+### Stream Termination
+
+The stream automatically closes when:
+- A `scan_complete` event is sent (successful completion)
+- An `error` event is sent (scan failed)
+- The client disconnects
+- The scan is cancelled
+
+<RequestExample>
+
+```bash cURL
+curl -N -H "Authorization: Bearer YOUR_API_TOKEN" \
+  "https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/progress/stream"
+```
+
+```javascript JavaScript (EventSource)
+const eventSource = new EventSource(
+  'https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/progress/stream',
+  {
+    headers: {
+      'Authorization': 'Bearer YOUR_API_TOKEN'
+    }
+  }
+);
+
+eventSource.addEventListener('status_change', (e) => {
+  const data = JSON.parse(e.data);
+  console.log('Status changed:', data.status);
+});
+
+eventSource.addEventListener('stage_update', (e) => {
+  const data = JSON.parse(e.data);
+  console.log(`Stage ${data.stage}: ${data.status}`);
+});
+
+eventSource.addEventListener('finding_added', (e) => {
+  const data = JSON.parse(e.data);
+  console.log('New finding:', data.title, data.severity);
+});
+
+eventSource.addEventListener('scan_complete', (e) => {
+  const data = JSON.parse(e.data);
+  console.log('Scan complete!', data);
+  eventSource.close();
+});
+
+eventSource.addEventListener('error', (e) => {
+  const data = JSON.parse(e.data);
+  console.error('Scan failed:', data.error);
+  eventSource.close();
+});
+```
+
+```python Python
+import requests
+import json
+
+headers = {'Authorization': 'Bearer YOUR_API_TOKEN'}
+url = 'https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/progress/stream'
+
+with requests.get(url, headers=headers, stream=True) as response:
+    for line in response.iter_lines():
+        if line:
+            line = line.decode('utf-8')
+            if line.startswith('event:'):
+                event_type = line.split(':', 1)[1].strip()
+            elif line.startswith('data:'):
+                data = json.loads(line.split(':', 1)[1])
+                print(f'{event_type}: {data}')
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```text SSE Stream
+event: stage_update
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","stage":"ingest","status":"running","timestamp":"2026-03-12T10:00:05Z"}
+
+event: stage_update
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","stage":"ingest","status":"completed","timestamp":"2026-03-12T10:01:23Z"}
+
+event: status_change
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","status":"hunting","timestamp":"2026-03-12T10:01:25Z","finding_count":0,"critical":0,"high":0,"medium":0,"low":0}
+
+event: stage_update
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","stage":"hunt","status":"running","timestamp":"2026-03-12T10:01:25Z"}
+
+event: finding_added
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","finding_id":"3f7a8b9c-0d1e-2f3a-4b5c-6d7e8f9a0b1c","title":"SQL Injection in user authentication","severity":"critical"}
+
+: keepalive
+
+event: stage_update
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","stage":"hunt","status":"completed","timestamp":"2026-03-12T10:10:45Z"}
+
+event: scan_complete
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","finding_count":42,"critical":5,"high":12,"medium":18,"low":7,"timestamp":"2026-03-12T10:15:30Z"}
+
+```
+
+```text Error Example
+event: stage_update
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","stage":"ingest","status":"failed","timestamp":"2026-03-12T10:02:15Z","error":"Failed to clone repository: authentication failed"}
+
+event: error
+data: {"scan_id":"550e8400-e29b-41d4-a716-446655440000","error":"Scan failed during ingest stage","timestamp":"2026-03-12T10:02:15Z"}
+
+```
+
+</ResponseExample>
+
+## Notes
+
+- The SSE stream is designed for fan-out to multiple clients - multiple connections to the same scan will all receive updates
+- If events are produced faster than they can be consumed, the broadcast channel may lag and skip events (you'll receive a lag notification)
+- The broadcast channel is automatically cleaned up after the scan completes
+- For historical scan data or to check the current state without streaming, use the [Get Scan](/api/scans/get) endpoint instead

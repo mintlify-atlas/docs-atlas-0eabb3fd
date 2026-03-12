@@ -1,0 +1,160 @@
+---
+title: "Get Scan"
+api: "GET /api/scans/{id}"
+description: "Retrieve details of a specific scan by ID"
+---
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier (UUID) of the scan
+</ParamField>
+
+## Response
+
+Returns a scan object with the following fields:
+
+<ResponseField name="id" type="string">
+  Unique identifier (UUID) of the scan
+</ResponseField>
+
+<ResponseField name="repo_id" type="string">
+  ID of the repository being scanned
+</ResponseField>
+
+<ResponseField name="scan_type" type="string">
+  Type of scan performed
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Current status of the scan. Possible values:
+  - `queued` - Scan is waiting to start
+  - `ingesting` - Ingesting repository code
+  - `ingested` - Ingestion complete
+  - `modeling` - Building threat model
+  - `modeled` - Threat model complete
+  - `static_analysis` - Running static analysis
+  - `hunting` - AI-powered vulnerability hunting
+  - `hunted` - Hunting complete
+  - `validating` - Validating findings
+  - `validated` - Validation complete
+  - `reporting` - Generating report
+  - `completed` - Scan finished successfully
+  - `failed` - Scan failed
+  - `cancelled` - Scan was cancelled
+</ResponseField>
+
+<ResponseField name="commit_sha" type="string" optional>
+  Git commit SHA being scanned
+</ResponseField>
+
+<ResponseField name="base_commit_sha" type="string" optional>
+  Base commit SHA for differential scans
+</ResponseField>
+
+<ResponseField name="parent_scan_id" type="string" optional>
+  ID of the parent scan (for incremental scans)
+</ResponseField>
+
+<ResponseField name="triggered_by" type="string" optional>
+  User ID who triggered the scan
+</ResponseField>
+
+<ResponseField name="finding_count" type="integer">
+  Total number of findings discovered
+</ResponseField>
+
+<ResponseField name="critical_count" type="integer">
+  Number of critical severity findings
+</ResponseField>
+
+<ResponseField name="high_count" type="integer">
+  Number of high severity findings
+</ResponseField>
+
+<ResponseField name="medium_count" type="integer">
+  Number of medium severity findings
+</ResponseField>
+
+<ResponseField name="low_count" type="integer">
+  Number of low severity findings
+</ResponseField>
+
+<ResponseField name="started_at" type="string" optional>
+  ISO 8601 timestamp when the scan started
+</ResponseField>
+
+<ResponseField name="completed_at" type="string" optional>
+  ISO 8601 timestamp when the scan completed
+</ResponseField>
+
+<ResponseField name="error_message" type="string" optional>
+  Error message if the scan failed
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  ISO 8601 timestamp when the scan was created
+</ResponseField>
+
+<ResponseField name="updated_at" type="string">
+  ISO 8601 timestamp when the scan was last updated
+</ResponseField>
+
+<RequestExample>
+
+```bash cURL
+curl -X GET "https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000" \
+  -H "Authorization: Bearer YOUR_API_TOKEN"
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "success": true,
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "repo_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "scan_type": "full",
+    "status": "completed",
+    "commit_sha": "a1b2c3d4e5f6",
+    "base_commit_sha": null,
+    "parent_scan_id": null,
+    "triggered_by": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+    "finding_count": 42,
+    "critical_count": 5,
+    "high_count": 12,
+    "medium_count": 18,
+    "low_count": 7,
+    "started_at": "2026-03-12T10:00:00Z",
+    "completed_at": "2026-03-12T10:15:30Z",
+    "error_message": null,
+    "created_at": "2026-03-12T09:55:00Z",
+    "updated_at": "2026-03-12T10:15:30Z"
+  }
+}
+```
+
+```json 404
+{
+  "success": false,
+  "error": {
+    "code": 404,
+    "message": "Scan '550e8400-e29b-41d4-a716-446655440000' not found"
+  }
+}
+```
+
+```json 500
+{
+  "success": false,
+  "error": {
+    "code": 500,
+    "message": "Failed to fetch scan: database error"
+  }
+}
+```
+
+</ResponseExample>

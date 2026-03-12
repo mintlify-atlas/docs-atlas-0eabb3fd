@@ -1,0 +1,498 @@
+---
+title: Configuration
+description: Configure Heimdall for your environment with AI providers, OAuth, security settings, and workers
+---
+
+Heimdall is configured entirely via environment variables. This guide covers all configuration options.
+
+## Configuration File
+
+All configuration is defined in a `.env` file in the project root. Copy the example file to get started:
+
+```bash
+cp .env.example .env
+```
+
+<Note>
+After modifying `.env`, restart Heimdall for changes to take effect.
+</Note>
+
+## Server Configuration
+
+Basic server settings for HTTP binding and CORS.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_HOST` | `0.0.0.0` | Bind address for the HTTP server |
+| `APP_PORT` | `8080` | Listen port |
+| `TLS_ENABLED` | `false` | Enable TLS termination in the app (set `true` only if not behind a reverse proxy) |
+| `CORS_ALLOWED_ORIGIN` | `http://localhost:8080` | CORS allowed origin for API requests |
+| `DATA_DIR` | `./data` | Persistent data directory for uploads, cloned repos, etc. |
+
+### Example
+
+```bash .env
+APP_HOST=0.0.0.0
+APP_PORT=8080
+TLS_ENABLED=false  # Use reverse proxy for TLS in production
+CORS_ALLOWED_ORIGIN=http://localhost:8080
+DATA_DIR=./data
+```
+
+<Warning>
+Only set `TLS_ENABLED=true` if Heimdall handles TLS directly. In production, use a reverse proxy (Nginx, Caddy) for TLS termination instead.
+</Warning>
+
+## Database Configuration
+
+Heimdall requires PostgreSQL 14+.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+
+### Example
+
+```bash .env
+# Docker Compose (default)
+DATABASE_URL=postgres://heimdall:heimdall@localhost:5432/heimdall
+
+# Local PostgreSQL
+DATABASE_URL=postgres://username:password@localhost:5432/heimdall
+
+# Remote PostgreSQL
+DATABASE_URL=postgres://user:pass@db.example.com:5432/heimdall?sslmode=require
+```
+
+<Note>
+The database schema is applied automatically on startup using idempotent DDL (`IF NOT EXISTS` statements). No manual migrations needed.
+</Note>
+
+## AI Provider Configuration
+
+Heimdall requires **at least one** AI provider. When multiple providers are configured, Heimdall chains them in a **fallback provider** — if the primary fails with a retryable error (429 rate limit, 500/502/503 server errors, billing/quota exhaustion, or connection failures), requests automatically fall through to the next configured provider.
+
+**Priority order:** Anthropic → OpenAI → Ollama
+
+| Variable | Provider | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Claude | Anthropic API key (format: `sk-ant-...`) |
+| `OPENAI_API_KEY` | OpenAI | OpenAI API key (format: `sk-...`) |
+| `OLLAMA_URL` | Ollama | Ollama server URL (e.g., `http://localhost:11434`) |
+| `DEFAULT_AI_MODEL` | — | Override default model (default: `claude-sonnet-4-20250514`) |
+
+### Example
+
+```bash .env
+# Anthropic (Claude) - Recommended
+ANTHROPIC_API_KEY=sk-ant-api03-...
+
+# OpenAI (GPT-4o) - Fallback
+OPENAI_API_KEY=sk-proj-...
+
+# Ollama (Local models) - Optional
+OLLAMA_URL=http://localhost:11434
+
+# Default model (optional)
+DEFAULT_AI_MODEL=claude-sonnet-4-20250514
+```
+
+### Supported Models
+
+#### Anthropic (Claude)
+
+- `claude-sonnet-4-20250514` (default, recommended)
+- `claude-opus-4-20250514` (most capable)
+- `claude-3-5-sonnet-20241022`
+
+#### OpenAI
+
+- `gpt-4o` (latest)
+- `gpt-4o-mini`
+- `gpt-4-turbo`
+
+#### Ollama (Local)
+
+- `llama3.3:70b`
+- `mistral-nemo`
+- `codestral:latest`
+
+### Automatic Fallback Behavior
+
+<Steps>
+  <Step title="Primary provider fails">
+    If the primary provider (Anthropic) returns a retryable error (HTTP 429, 500, 502, 503, 529, billing errors, or connection failures), the request is automatically retried with the next configured provider.
+  </Step>
+
+  <Step title="Cascade to next provider">
+    The fallback chain continues through all configured providers until one succeeds or all fail.
+  </Step>
+
+  <Step title="Observability">
+    Every LLM call records the actual `provider` and `model` used in the `agent_tool_calls` table, providing full visibility into which provider served each request.
+  </Step>
+</Steps>
+
+<Note>
+Non-retryable errors (401 Unauthorized, 400 Bad Request) propagate immediately without fallback.
+</Note>
+
+### Bring Your Own Key (BYOK)
+
+Users can add API keys through the **Settings UI** after registration:
+
+1. Navigate to **Settings** → **AI Providers**
+2. Click **Add API Key**
+3. Select provider (Anthropic, OpenAI, or Ollama)
+4. Enter your API key
+5. Click **Test Connection** to verify
+
+<Warning>
+API keys are encrypted at rest using AES-256-GCM when `ENCRYPTION_KEY` is configured. Always set `ENCRYPTION_KEY` in production.
+</Warning>
+
+## OAuth Configuration
+
+OAuth enables GitHub/GitLab login and repository import.
+
+### GitHub OAuth
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
+| `GITHUB_REDIRECT_URI` | Callback URL (default: `http://localhost:8080/api/auth/github/callback`) |
+
+#### Setting up GitHub OAuth App
+
+<Steps>
+  <Step title="Create OAuth App">
+    1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
+    2. Click **New OAuth App**
+    3. Fill in:
+       - **Application name:** Heimdall
+       - **Homepage URL:** `http://localhost:8080`
+       - **Authorization callback URL:** `http://localhost:8080/api/auth/github/callback`
+    4. Click **Register application**
+  </Step>
+
+  <Step title="Get credentials">
+    Copy the **Client ID** and generate a **Client Secret**.
+  </Step>
+
+  <Step title="Configure Heimdall">
+    Add to `.env`:
+
+    ```bash .env
+    GITHUB_CLIENT_ID=Ov23li...
+    GITHUB_CLIENT_SECRET=...
+    GITHUB_REDIRECT_URI=http://localhost:8080/api/auth/github/callback
+    ```
+  </Step>
+</Steps>
+
+### GitLab OAuth
+
+| Variable | Description |
+|----------|-------------|
+| `GITLAB_CLIENT_ID` | GitLab OAuth app client ID |
+| `GITLAB_CLIENT_SECRET` | GitLab OAuth app client secret |
+| `GITLAB_REDIRECT_URI` | Callback URL (default: `http://localhost:8080/api/auth/gitlab/callback`) |
+| `GITLAB_BASE_URL` | GitLab base URL (default: `https://gitlab.com`) |
+
+#### Setting up GitLab OAuth App
+
+<Steps>
+  <Step title="Create OAuth App">
+    1. Go to [GitLab Applications](https://gitlab.com/-/user_settings/applications)
+    2. Fill in:
+       - **Name:** Heimdall
+       - **Redirect URI:** `http://localhost:8080/api/auth/gitlab/callback`
+       - **Scopes:** Select `api`, `read_user`, `read_repository`
+    3. Click **Save application**
+  </Step>
+
+  <Step title="Get credentials">
+    Copy the **Application ID** and **Secret**.
+  </Step>
+
+  <Step title="Configure Heimdall">
+    Add to `.env`:
+
+    ```bash .env
+    GITLAB_CLIENT_ID=...
+    GITLAB_CLIENT_SECRET=...
+    GITLAB_REDIRECT_URI=http://localhost:8080/api/auth/gitlab/callback
+    GITLAB_BASE_URL=https://gitlab.com
+    ```
+  </Step>
+</Steps>
+
+<Note>
+For self-hosted GitLab, set `GITLAB_BASE_URL` to your instance URL (e.g., `https://gitlab.company.com`).
+</Note>
+
+## Security Configuration
+
+Critical security settings for encryption and webhook verification.
+
+| Variable | Description | How to Generate |
+|----------|-------------|------------------|
+| `ENCRYPTION_KEY` | 32-byte hex key for AES-256-GCM encryption of stored API keys | `openssl rand -hex 32` |
+| `WEBHOOK_SECRET` | Shared secret for GitHub/GitLab webhook signature verification | `openssl rand -hex 20` |
+
+### Example
+
+```bash .env
+# Generate encryption key (required for BYOK)
+ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# Generate webhook secret (required for webhooks)
+WEBHOOK_SECRET=$(openssl rand -hex 20)
+```
+
+### Encryption Key
+
+The `ENCRYPTION_KEY` encrypts stored API keys using AES-256-GCM:
+
+- **Required** if users add API keys through the Settings UI
+- **Must be 64 hex characters** (32 bytes)
+- **Must be kept secret** — if lost, stored API keys cannot be decrypted
+
+<Warning>
+**Never commit `ENCRYPTION_KEY` to version control.** Store it securely in your environment or secrets manager.
+</Warning>
+
+### Webhook Secret
+
+The `WEBHOOK_SECRET` verifies webhook payloads from GitHub/GitLab:
+
+- **GitHub:** HMAC-SHA256 verification against `X-Hub-Signature-256` header
+- **GitLab:** Direct string comparison against `X-Gitlab-Token` header
+
+#### Setting up GitHub Webhook
+
+<Steps>
+  <Step title="Go to repository settings">
+    Navigate to your repo → **Settings** → **Webhooks** → **Add webhook**
+  </Step>
+
+  <Step title="Configure webhook">
+    - **Payload URL:** `https://heimdall.example.com/webhooks/github`
+    - **Content type:** `application/json`
+    - **Secret:** Same value as `WEBHOOK_SECRET` in your `.env`
+    - **Events:** Select "Just the push event"
+  </Step>
+
+  <Step title="Save webhook">
+    Click **Add webhook**. GitHub will send a test ping.
+  </Step>
+</Steps>
+
+#### Setting up GitLab Webhook
+
+<Steps>
+  <Step title="Go to project settings">
+    Navigate to your project → **Settings** → **Webhooks**
+  </Step>
+
+  <Step title="Configure webhook">
+    - **URL:** `https://heimdall.example.com/webhooks/gitlab`
+    - **Secret token:** Same value as `WEBHOOK_SECRET`
+    - **Trigger:** Push events
+  </Step>
+
+  <Step title="Add webhook">
+    Click **Add webhook**. GitLab will send a test event.
+  </Step>
+</Steps>
+
+## Worker Configuration
+
+The background worker polls for queued scans and executes them.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKER_ENABLED` | `true` | Enable/disable the background scan worker |
+| `WORKER_POLL_INTERVAL_SECS` | `5` | How often the worker polls for queued scans (seconds) |
+| `WORKER_STALE_TIMEOUT_MINS` | `10` | Timeout for stale/stuck scans (minutes) |
+
+### Example
+
+```bash .env
+# Enable worker (default)
+WORKER_ENABLED=true
+
+# Poll every 5 seconds
+WORKER_POLL_INTERVAL_SECS=5
+
+# Timeout stuck scans after 10 minutes
+WORKER_STALE_TIMEOUT_MINS=10
+```
+
+### Worker Behavior
+
+<Steps>
+  <Step title="Poll for queued scans">
+    Every `WORKER_POLL_INTERVAL_SECS` seconds, the worker queries the database for scans with status `queued`.
+  </Step>
+
+  <Step title="Execute scan pipeline">
+    The worker picks up the oldest queued scan and executes the 7-stage pipeline.
+  </Step>
+
+  <Step title="Handle stale scans">
+    If a scan is stuck in `running` state for longer than `WORKER_STALE_TIMEOUT_MINS`, it is automatically marked as `failed`.
+  </Step>
+</Steps>
+
+<Note>
+Set `WORKER_ENABLED=false` to disable automatic scan execution. Scans will remain queued until manually triggered or a worker is enabled.
+</Note>
+
+## Logging Configuration
+
+Control log verbosity using the `RUST_LOG` environment variable.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info,heimdall=debug` | Log filter ([env_logger syntax](https://docs.rs/env_logger)) |
+
+### Log Levels
+
+- `error` — Critical errors only
+- `warn` — Warnings and errors
+- `info` — General information, warnings, and errors
+- `debug` — Detailed debugging information
+- `trace` — Very verbose tracing (not recommended in production)
+
+### Example
+
+```bash .env
+# Default: info for all modules, debug for heimdall
+RUST_LOG=info,heimdall=debug
+
+# Production: only errors
+RUST_LOG=error
+
+# Development: full debug
+RUST_LOG=debug
+
+# Trace AI requests
+RUST_LOG=info,heimdall::ai=trace
+```
+
+### Module-Specific Logging
+
+```bash .env
+# Debug only the Hunt agent
+RUST_LOG=info,heimdall::pipeline::hunt=debug
+
+# Trace database queries
+RUST_LOG=info,sqlx=trace
+
+# Debug AI provider fallback
+RUST_LOG=info,heimdall::ai::fallback=debug
+```
+
+## Complete Example
+
+Here's a complete production-ready `.env` configuration:
+
+```bash .env
+# =============================================================================
+# Heimdall Production Configuration
+# =============================================================================
+
+# Server
+APP_HOST=0.0.0.0
+APP_PORT=8080
+TLS_ENABLED=false  # Use reverse proxy for TLS
+CORS_ALLOWED_ORIGIN=https://heimdall.example.com
+DATA_DIR=/opt/heimdall/data
+
+# Database
+DATABASE_URL=postgres://heimdall:SECURE_PASSWORD@localhost:5432/heimdall
+
+# AI Providers (BYOK — set at least one)
+ANTHROPIC_API_KEY=sk-ant-api03-...
+OPENAI_API_KEY=sk-proj-...  # Fallback
+DEFAULT_AI_MODEL=claude-sonnet-4-20250514
+
+# OAuth
+GITHUB_CLIENT_ID=Ov23li...
+GITHUB_CLIENT_SECRET=...
+GITHUB_REDIRECT_URI=https://heimdall.example.com/api/auth/github/callback
+
+GITLAB_CLIENT_ID=...
+GITLAB_CLIENT_SECRET=...
+GITLAB_REDIRECT_URI=https://heimdall.example.com/api/auth/gitlab/callback
+GITLAB_BASE_URL=https://gitlab.com
+
+# Security
+ENCRYPTION_KEY=<64-char-hex-string>
+WEBHOOK_SECRET=<40-char-hex-string>
+
+# Worker
+WORKER_ENABLED=true
+WORKER_POLL_INTERVAL_SECS=5
+WORKER_STALE_TIMEOUT_MINS=10
+
+# Logging
+RUST_LOG=info,heimdall=info
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first security scan
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Set up Heimdall for local development or production
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Missing Required Environment Variables
+
+If Heimdall fails to start with `DATABASE_URL must be set`:
+
+1. Verify `.env` file exists in the project root
+2. Check that `DATABASE_URL` is set and not empty
+3. Restart Heimdall
+
+### AI Provider Not Working
+
+If scans fail with `No AI provider configured`:
+
+1. Ensure at least one of these is set:
+   - `ANTHROPIC_API_KEY`
+   - `OPENAI_API_KEY`
+   - `OLLAMA_URL`
+2. Test the provider connection via Settings → AI Providers
+3. Check API key format (Anthropic: `sk-ant-...`, OpenAI: `sk-...`)
+
+### Webhook Verification Failed
+
+If webhooks return `403 Forbidden`:
+
+1. Verify `WEBHOOK_SECRET` matches the secret configured in GitHub/GitLab
+2. Check webhook logs for signature verification errors:
+   ```bash
+   RUST_LOG=debug,heimdall::routes::webhooks=trace cargo run --bin heimdall
+   ```
+3. Ensure the webhook payload is valid JSON
+
+### Encryption Key Issues
+
+If stored API keys cannot be decrypted:
+
+1. Verify `ENCRYPTION_KEY` is exactly 64 hex characters (32 bytes)
+2. Ensure the same `ENCRYPTION_KEY` is used across restarts
+3. If lost, users must re-add API keys through the Settings UI
+
+<Warning>
+Changing `ENCRYPTION_KEY` will invalidate all stored API keys. Users must re-enter their keys.
+</Warning>

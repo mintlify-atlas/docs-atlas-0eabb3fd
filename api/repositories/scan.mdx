@@ -1,0 +1,242 @@
+---
+title: "Trigger Repository Scan"
+api: "POST /api/repos/{id}/scan"
+description: "Initiate a security scan on a repository"
+---
+
+## Authentication
+
+This endpoint requires authentication. Include your session token in the request cookies or headers.
+
+## Path Parameters
+
+<ParamField path="id" type="uuid" required>
+  The unique identifier of the repository to scan.
+</ParamField>
+
+## Request Details
+
+This endpoint does not accept a request body. The scan will be performed using the repository's configured source and default branch.
+
+## Scan Process
+
+When triggered, the scan will:
+
+1. Create a new scan record with status `queued`
+2. Determine the appropriate AI model and provider for the user
+3. Either queue a background job (in production) or start an inline scan (in development)
+4. Progress through multiple stages: ingesting, modeling, static analysis, hunting, validating, and reporting
+5. Generate findings for security vulnerabilities, anti-patterns, and potential issues
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates whether the scan was successfully initiated.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The created scan object.
+  
+  <Expandable title="Scan Object">
+    <ResponseField name="id" type="uuid">
+      Unique identifier for the scan.
+    </ResponseField>
+    
+    <ResponseField name="repo_id" type="uuid">
+      ID of the repository being scanned.
+    </ResponseField>
+    
+    <ResponseField name="scan_type" type="string">
+      Type of scan performed. Currently always `full`.
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      Current status of the scan. Initial value is `queued`. Possible values:
+      - `queued` - Waiting to start
+      - `ingesting` - Fetching and processing code
+      - `ingested` - Code successfully loaded
+      - `modeling` - Creating threat model
+      - `modeled` - Threat model complete
+      - `static_analysis` - Running static analysis
+      - `hunting` - AI-powered vulnerability hunting
+      - `hunted` - Hunting complete
+      - `validating` - Validating findings
+      - `validated` - Validation complete
+      - `reporting` - Generating report
+      - `completed` - Scan finished successfully
+      - `failed` - Scan encountered an error
+      - `cancelled` - Scan was cancelled
+    </ResponseField>
+    
+    <ResponseField name="triggered_by" type="uuid">
+      ID of the user who triggered the scan.
+    </ResponseField>
+    
+    <ResponseField name="commit_sha" type="string" optional>
+      Git commit SHA being scanned, if applicable.
+    </ResponseField>
+    
+    <ResponseField name="base_commit_sha" type="string" optional>
+      Base commit SHA for differential scans.
+    </ResponseField>
+    
+    <ResponseField name="parent_scan_id" type="uuid" optional>
+      ID of the parent scan for incremental scans.
+    </ResponseField>
+    
+    <ResponseField name="finding_count" type="integer">
+      Total number of findings. Initially `0`.
+    </ResponseField>
+    
+    <ResponseField name="critical_count" type="integer">
+      Number of critical severity findings. Initially `0`.
+    </ResponseField>
+    
+    <ResponseField name="high_count" type="integer">
+      Number of high severity findings. Initially `0`.
+    </ResponseField>
+    
+    <ResponseField name="medium_count" type="integer">
+      Number of medium severity findings. Initially `0`.
+    </ResponseField>
+    
+    <ResponseField name="low_count" type="integer">
+      Number of low severity findings. Initially `0`.
+    </ResponseField>
+    
+    <ResponseField name="started_at" type="datetime" optional>
+      Timestamp when the scan actually started processing.
+    </ResponseField>
+    
+    <ResponseField name="completed_at" type="datetime" optional>
+      Timestamp when the scan finished.
+    </ResponseField>
+    
+    <ResponseField name="error_message" type="string" optional>
+      Error message if the scan failed.
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="datetime">
+      Timestamp when the scan was created.
+    </ResponseField>
+    
+    <ResponseField name="updated_at" type="datetime">
+      Timestamp when the scan was last updated.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example Request
+
+```bash
+curl -X POST https://api.heimdall.example.com/api/repos/01936d2f-8c4e-7890-b123-456789abcdef/scan \
+  -H "Cookie: session=your_session_token"
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "01936d30-abcd-1234-5678-90abcdef1234",
+    "repo_id": "01936d2f-8c4e-7890-b123-456789abcdef",
+    "scan_type": "full",
+    "status": "queued",
+    "triggered_by": "01936d2e-1234-5678-9abc-def012345678",
+    "commit_sha": null,
+    "base_commit_sha": null,
+    "parent_scan_id": null,
+    "finding_count": 0,
+    "critical_count": 0,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "started_at": null,
+    "completed_at": null,
+    "error_message": null,
+    "created_at": "2026-03-12T16:20:00Z",
+    "updated_at": "2026-03-12T16:20:00Z"
+  }
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="object">
+  Error information when the request fails.
+  
+  <Expandable title="Error Object">
+    <ResponseField name="success" type="boolean">
+      Always `false` for error responses.
+    </ResponseField>
+    
+    <ResponseField name="code" type="integer">
+      HTTP status code.
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Error message describing what went wrong.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### 401 Unauthorized
+
+Returned when authentication credentials are missing or invalid.
+
+```json
+{
+  "success": false,
+  "code": 401,
+  "message": "Authentication required"
+}
+```
+
+### 404 Not Found
+
+Returned when the repository with the specified ID does not exist.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "Repo '01936d2f-8c4e-7890-b123-456789abcdef' not found"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when the server encounters an error creating the scan.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to create scan: database connection error"
+}
+```
+
+### 503 Service Unavailable
+
+Returned when the AI service is not available or not configured for the user.
+
+```json
+{
+  "success": false,
+  "code": 503,
+  "message": "AI service unavailable. Please configure your API keys."
+}
+```
+
+## Status Code
+
+Successful scan creation returns HTTP status code **202 Accepted**, indicating that the request has been accepted for processing but the scan is not yet complete.
+
+## Notes
+
+- Scans are asynchronous operations. Use the returned `scan_id` to poll the scan status or subscribe to server-sent events (SSE) for real-time updates.
+- The scan will use the AI model configured for the repository owner's account.
+- For OAuth-connected repositories (GitHub/GitLab), the scan will use stored credentials to access the repository.
+- If automatic issue creation is enabled for the repository, issues will be created based on the configured severity threshold.
+- If you're using HTMX-based requests (with `HX-Request` header), the response will include an `HX-Redirect` header pointing to `/scans/{scan_id}`.

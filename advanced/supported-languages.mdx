@@ -1,0 +1,504 @@
+---
+title: Supported Languages
+description: Language support matrix, AST parsing capabilities, and how to add new language support to Heimdall
+---
+
+Heimdall uses tree-sitter for AST-based code analysis, with regex fallbacks for languages without full parser support. This page covers what's extracted for each language and how to extend support.
+
+## Language Support Matrix
+
+| Language | Grammar | Symbol Extraction | Call Graph | Status |
+|----------|---------|-------------------|------------|--------|
+| **Rust** | tree-sitter-rust | Functions, structs, traits, enums, methods | Full | ✅ Full |
+| **Python** | tree-sitter-python | Functions, classes, methods | Full | ✅ Full |
+| **JavaScript** | tree-sitter-javascript | Functions, classes, arrow functions, methods | Full | ✅ Full |
+| **TypeScript** | tree-sitter-typescript | Functions, classes, methods, interfaces | Full | ✅ Full |
+| **Go** | tree-sitter-go | Functions, methods, structs, interfaces | Full | ✅ Full |
+| **Java** | tree-sitter-java | Classes, methods, constructors, interfaces | Full | ✅ Full |
+| **Ruby** | regex fallback | Methods, classes, modules | Basic | ⚠️ Basic |
+| **PHP** | regex fallback | Functions, classes | Basic | ⚠️ Basic |
+| **C** | regex fallback | Functions, structs, typedefs, macros | Basic | ⚠️ Basic |
+| **C++** | regex fallback | Classes, functions, methods, namespaces | Basic | ⚠️ Basic |
+| **C#** | regex fallback | Classes, methods, properties, interfaces | Basic | ⚠️ Basic |
+| **Swift** | regex fallback | Functions, classes, structs, protocols | Basic | ⚠️ Basic |
+| **Kotlin** | regex fallback | Functions, classes, objects | Basic | ⚠️ Basic |
+| **Scala** | regex fallback | Functions, classes, traits, objects | Basic | ⚠️ Basic |
+| **Shell/Bash** | regex fallback | Functions, aliases, exports | Basic | ⚠️ Basic |
+
+**Legend:**
+- ✅ **Full**: Tree-sitter AST parsing, complete symbol table, accurate call graphs
+- ⚠️ **Basic**: Regex-based heuristics, best-effort symbol extraction, no call graph
+
+## Tree-Sitter Grammars
+
+Tree-sitter provides robust, incremental parsers for supported languages. Heimdall uses the following grammars:
+
+### Rust
+
+**Grammar**: `tree-sitter-rust`  
+**Version**: Latest  
+**Extraction**: `src/index/symbols.rs:189-293`
+
+**What's extracted:**
+- Functions (`fn main()`, `pub async fn handler()`)
+- Structs (`pub struct Config`)
+- Traits (`pub trait Provider`)
+- Enums (`pub enum Status`)
+- Impl blocks and methods
+- Visibility modifiers (`pub`, private)
+- Entry points (`main()`, route handlers in `routes/` files)
+
+**Example:**
+```rust
+pub struct User {
+    id: Uuid,
+    email: String,
+}
+
+impl User {
+    pub fn new(email: String) -> Self {
+        // ...
+    }
+}
+```
+
+**Extracted symbols:**
+- `User` (struct, public)
+- `new` (method, public)
+
+### Python
+
+**Grammar**: `tree-sitter-python`  
+**Version**: Latest  
+**Extraction**: `src/index/symbols.rs:299-350`
+
+**What's extracted:**
+- Functions (`def hello():`)
+- Classes (`class MyClass:`)
+- Methods (functions inside class bodies)
+- Async functions (`async def handler():`)
+- Public/private based on naming (`_private_method`)
+
+**Example:**
+```python
+class UserService:
+    def create_user(self, email):
+        pass
+    
+    def _validate_email(self, email):
+        pass
+```
+
+**Extracted symbols:**
+- `UserService` (class, public)
+- `create_user` (method, public)
+- `_validate_email` (method, private)
+
+### JavaScript / TypeScript
+
+**Grammar**: `tree-sitter-javascript`, `tree-sitter-typescript`  
+**Extraction**: `src/index/symbols.rs:356-460`
+
+**What's extracted:**
+- Function declarations (`function foo() {}`)
+- Class declarations (`class Bar {}`)
+- Arrow functions (`const handler = () => {}`)
+- Methods (`method() {}`)
+- Exported symbols (`export function ...`, `export class ...`)
+
+**Example:**
+```typescript
+export class AuthService {
+    login(email: string, password: string) {
+        // ...
+    }
+    
+    #generateToken() {  // Private
+        // ...
+    }
+}
+
+export const validateToken = (token: string) => {
+    // ...
+};
+```
+
+**Extracted symbols:**
+- `AuthService` (class, exported)
+- `login` (method, public)
+- `#generateToken` (method, private)
+- `validateToken` (function, exported)
+
+### Go
+
+**Grammar**: `tree-sitter-go`  
+**Extraction**: `src/index/symbols.rs:466-542`
+
+**What's extracted:**
+- Functions (`func Process()`)
+- Methods (`func (s *Service) Handle()`)
+- Structs (`type Config struct`)
+- Interfaces (`type Reader interface`)
+- Public/private based on capitalization (`Public` vs `private`)
+
+**Example:**
+```go
+type UserRepository struct {
+    db *sql.DB
+}
+
+func (r *UserRepository) FindByID(id string) (*User, error) {
+    // ...
+}
+
+func (r *UserRepository) validate(user *User) error {
+    // private method
+}
+```
+
+**Extracted symbols:**
+- `UserRepository` (struct, public)
+- `FindByID` (method, public, entry point)
+- `validate` (method, private)
+
+### Java
+
+**Grammar**: `tree-sitter-java`  
+**Extraction**: `src/index/symbols.rs:548-626`
+
+**What's extracted:**
+- Classes (`public class User`)
+- Interfaces (`public interface Service`)
+- Methods (`public void save()`)
+- Constructors (`public User()`)
+- Public/private/protected modifiers
+
+**Example:**
+```java
+public class UserController {
+    public void createUser(UserRequest req) {
+        // Entry point (public + "Controller" in filename)
+    }
+    
+    private void validate(UserRequest req) {
+        // ...
+    }
+}
+```
+
+**Extracted symbols:**
+- `UserController` (class, public)
+- `createUser` (method, public, entry point)
+- `validate` (method, private)
+
+## What's Extracted for Each Language
+
+### Symbol Types
+
+Each extracted symbol includes:
+
+```rust
+pub struct Symbol {
+    pub name: String,           // Symbol identifier
+    pub kind: String,           // function | method | class | struct | trait | etc.
+    pub file: String,           // File path
+    pub line: usize,            // Line number
+    pub is_public: bool,        // Visibility
+    pub is_entry_point: bool,   // Entry point heuristic
+    pub calls: Vec<String>,     // Functions called by this symbol
+}
+```
+
+### Entry Point Detection
+
+Heimdall marks symbols as **entry points** using heuristics:
+
+| Language | Entry Point Criteria |
+|----------|---------------------|
+| Rust | `fn main()`, public functions in `routes/` files, functions starting with `handle_` |
+| Python | `def main()`, functions in `views/` or `routes/` files |
+| JavaScript/TypeScript | Functions in files containing `route`, `handler`, or `api` in path |
+| Go | `func main()`, public functions in `handler/` or `api/` files |
+| Java | `public static void main()`, public methods in `*Controller` or `*Handler` files |
+
+Entry points are prioritized by the Hunt agent as investigation starting points.
+
+### Call Graph Construction
+
+For tree-sitter-supported languages, Heimdall extracts call relationships:
+
+1. Find all call expressions in the AST (`call_expression`, `method_invocation`, etc.)
+2. Extract the callee identifier
+3. Match against known function/method symbols
+4. Store in `Symbol.calls` vector
+
+**Example:**
+```rust
+fn process_user(id: Uuid) {
+    validate_id(id);  // Call extracted
+    store_user(id);   // Call extracted
+}
+```
+
+The `process_user` symbol will have `calls = ["validate_id", "store_user"]`.
+
+## Regex Fallback Languages
+
+For languages without tree-sitter support, Heimdall uses regex-based extraction.
+
+### Ruby
+
+**Extraction**: `src/index/symbols.rs:869-915`
+
+**Patterns:**
+```rust
+static RUBY_DEF: Regex = r"(?m)^\s*def\s+(\w+[!?=]?)";
+static RUBY_CLASS: Regex = r"(?m)^\s*class\s+(\w+)";
+static RUBY_MODULE: Regex = r"(?m)^\s*module\s+(\w+)";
+```
+
+**Example:**
+```ruby
+class UserService
+  def create(email)
+    # ...
+  end
+  
+  def valid_email?(email)
+    # ...
+  end
+end
+```
+
+**Extracted:**
+- `UserService` (class)
+- `create` (method)
+- `valid_email?` (method)
+
+### C/C++
+
+**Extraction**: `src/index/symbols.rs:952-1064`
+
+**Patterns:**
+```rust
+static C_FUNC: Regex = r"(?m)^(?:static\s+)?(?:inline\s+)?(?:void|int|char|...) (\w+)\s*\(";
+static CPP_CLASS: Regex = r"(?m)^\s*(?:template\s*<[^>]*>\s*)?class\s+(\w+)";
+```
+
+**Limitations:**
+- Function pointer types may cause false positives
+- Template specializations not fully supported
+- Preprocessor macros parsed separately
+
+### C#
+
+**Extraction**: `src/index/symbols.rs:1066-1127`
+
+**Patterns:**
+```rust
+static CS_TYPE: Regex = r"(?m)^\s*(?:public|private)?\s*(?:class|interface|enum|struct|record)\s+(\w+)";
+static CS_METHOD: Regex = r"(?m)^\s*(public|private|protected|internal)\s+(?:static\s+)?[\w<>\[\]?]+\s+(\w+)\s*\(";
+```
+
+## Adding New Language Support
+
+### Option 1: Tree-Sitter Grammar
+
+For full AST support:
+
+**Step 1**: Add the tree-sitter dependency to `Cargo.toml`:
+```toml
+[dependencies]
+tree-sitter-<language> = "0.x"
+```
+
+**Step 2**: Add grammar resolver in `src/index/symbols.rs`:
+```rust
+fn get_ts_language(lang: &str) -> Option<Language> {
+    match lang {
+        // ... existing languages ...
+        "kotlin" => Some(tree_sitter_kotlin::LANGUAGE.into()),
+        _ => None,
+    }
+}
+```
+
+**Step 3**: Implement extraction function:
+```rust
+fn extract_kotlin_ts(root: Node, source: &[u8], file: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+    let mut nodes = Vec::new();
+    
+    collect_nodes(
+        root,
+        &["function_declaration", "class_declaration"],
+        &mut nodes,
+    );
+    
+    for node in nodes {
+        match node.kind() {
+            "function_declaration" => {
+                if let Some(name) = child_text(node, "name", source) {
+                    symbols.push(Symbol {
+                        name: name.to_string(),
+                        kind: "function".to_string(),
+                        file: file.to_string(),
+                        line: node.start_position().row + 1,
+                        is_public: has_modifier(node, source, "public"),
+                        is_entry_point: name == "main",
+                        calls: Vec::new(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    symbols
+}
+```
+
+**Step 4**: Wire it into `extract_with_tree_sitter`:
+```rust
+let mut symbols = match language {
+    // ... existing languages ...
+    "kotlin" => extract_kotlin_ts(root, source, file),
+    _ => return None,
+};
+```
+
+**Step 5**: Add tests:
+```rust
+#[test]
+fn test_extract_kotlin_functions() {
+    let code = r#"
+        fun main() {
+            println("Hello")
+        }
+        
+        private fun helper() {}
+    "#;
+    let syms = extract_symbols(code, "kotlin", "main.kt");
+    assert!(syms.iter().any(|s| s.name == "main"));
+    assert!(syms.iter().any(|s| s.name == "helper"));
+}
+```
+
+### Option 2: Regex Fallback
+
+For simpler support:
+
+**Step 1**: Define regex patterns in `src/index/symbols.rs`:
+```rust
+use std::sync::LazyLock;
+use regex::Regex;
+
+static ELIXIR_DEF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*def\s+(\w+)").unwrap());
+static ELIXIR_MODULE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*defmodule\s+([\w.]+)").unwrap());
+```
+
+**Step 2**: Implement extraction:
+```rust
+fn extract_elixir_symbols(content: &str, file: &str) -> Vec<Symbol> {
+    let mut syms = Vec::new();
+    
+    for cap in ELIXIR_DEF.captures_iter(content) {
+        let name = cap[1].to_string();
+        let line = regex_line_number(content, cap.get(0).unwrap().start());
+        syms.push(Symbol {
+            name,
+            kind: "function".to_string(),
+            file: file.to_string(),
+            line,
+            is_public: true,
+            is_entry_point: false,
+            calls: Vec::new(),
+        });
+    }
+    
+    // ... modules ...
+    
+    syms
+}
+```
+
+**Step 3**: Wire into `extract_symbols_regex`:
+```rust
+fn extract_symbols_regex(content: &str, language: &str, file: &str) -> Vec<Symbol> {
+    match language {
+        // ... existing languages ...
+        "elixir" => extract_elixir_symbols(content, file),
+        _ => Vec::new(),
+    }
+}
+```
+
+## Language Detection
+
+Heimdall infers language from file extensions:
+
+```rust
+// In src/index/mod.rs
+pub fn detect_language(path: &str) -> Option<String> {
+    match Path::new(path).extension()?.to_str()? {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "js" => Some("javascript"),
+        "ts" => Some("typescript"),
+        "go" => Some("go"),
+        "java" => Some("java"),
+        "rb" => Some("ruby"),
+        "php" => Some("php"),
+        // Add new mappings here
+        _ => None,
+    }.map(String::from)
+}
+```
+
+## Static Analysis Rule Coverage
+
+Static analysis rules in `src/pipeline/static_analysis/mod.rs` use language filters:
+
+```rust
+Rule {
+    name: "sql-injection-fstring",
+    pattern: r#"(?i)cursor\.execute\s*\(\s*f["']"#,
+    severity: "high",
+    cwe: "CWE-89",
+    description: "SQL query built with f-string",
+    languages: &["python"],  // Python-only rule
+}
+```
+
+When adding a new language, update relevant rules' `languages` filters to include it.
+
+## Performance Considerations
+
+- **Tree-sitter parsing**: ~10-50ms per file (depends on file size)
+- **Regex fallback**: ~1-5ms per file
+- **Memory**: Symbol index is held in memory during scans (~1-5MB for typical repos)
+
+For very large monorepos (>100k files), consider:
+1. Indexing only changed files in incremental scans
+2. Sampling strategy (index entry points + changed files)
+3. Parallel indexing (Heimdall uses `rayon` for this)
+
+## Testing
+
+Run language extraction tests:
+
+```bash
+# All languages
+cargo test --lib index::symbols
+
+# Specific language
+cargo test --lib index::symbols::test_extract_rust_functions
+```
+
+## Related Files
+
+- `src/index/symbols.rs` — Symbol extraction for all languages
+- `src/index/callgraph.rs` — Call graph construction
+- `src/pipeline/static_analysis/mod.rs` — Static analysis rules with language filters

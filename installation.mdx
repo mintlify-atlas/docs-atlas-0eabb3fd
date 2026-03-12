@@ -1,0 +1,561 @@
+---
+title: Installation
+description: Install and set up Heimdall for local development or production deployment
+---
+
+This guide covers installing Heimdall for local development and production deployment using either local installation or Docker.
+
+## Prerequisites
+
+Before installing Heimdall, ensure you have the required dependencies.
+
+### Required Dependencies
+
+| Dependency | Version | Purpose |
+|-----------|---------|----------|
+| **Rust** | 1.85+ (2024 edition) | Compilation and runtime |
+| **PostgreSQL** | 14+ | Primary database |
+| **Git** | 2.25+ | Repository cloning |
+| **AI API Key** | — | At least one: Claude, OpenAI, or Ollama |
+
+### Optional Dependencies
+
+| Dependency | Version | Purpose |
+|-----------|---------|----------|
+| **Docker** | 20+ | Garmr sandbox for PoC validation |
+
+<Note>
+Docker is highly recommended for the Garmr sandbox, which executes proof-of-concept exploits in isolated containers. Without Docker, scans still work but sandbox validation is skipped gracefully.
+</Note>
+
+## Installing Prerequisites
+
+### Install Rust
+
+Rust 1.85+ is required for the 2024 edition features:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
+```
+
+Verify installation:
+
+```bash
+rustc --version
+# rustc 1.85.0 (or later)
+```
+
+### Install PostgreSQL
+
+<CodeGroup>
+```bash macOS
+brew install postgresql@17
+brew services start postgresql@17
+```
+
+```bash Ubuntu/Debian
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+```
+
+```bash Docker (Recommended for Dev)
+docker compose -f docker-compose.dev.yml up -d
+```
+</CodeGroup>
+
+Verify PostgreSQL is running:
+
+```bash
+psql --version
+# psql (PostgreSQL) 17.x
+```
+
+### Install Git
+
+<CodeGroup>
+```bash macOS
+brew install git
+```
+
+```bash Ubuntu/Debian
+sudo apt update
+sudo apt install git
+```
+</CodeGroup>
+
+Verify installation:
+
+```bash
+git --version
+# git version 2.25.0 (or later)
+```
+
+### Install Docker (Optional)
+
+Docker is required for the Garmr sandbox validation stage.
+
+<CodeGroup>
+```bash macOS
+# Install Docker Desktop from:
+# https://www.docker.com/products/docker-desktop/
+```
+
+```bash Linux
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Log out and back in for group changes to take effect
+```
+</CodeGroup>
+
+Verify Docker is running:
+
+```bash
+docker info
+```
+
+<Warning>
+On Linux, ensure your user is in the `docker` group to avoid permission issues. The Garmr sandbox needs access to the Docker socket.
+</Warning>
+
+## Local Development Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/modestnerd/heimdall.git
+    cd heimdall
+    ```
+  </Step>
+
+  <Step title="Start PostgreSQL">
+    Choose one method:
+
+    <CodeGroup>
+    ```bash Option A: Docker (Recommended)
+    docker compose -f docker-compose.dev.yml up -d
+    ```
+
+    ```bash Option B: Local PostgreSQL
+    # Create database
+    createdb heimdall
+
+    # Or with custom credentials
+    psql -U postgres -c "CREATE DATABASE heimdall;"
+    psql -U postgres -c "CREATE USER heimdall WITH PASSWORD 'heimdall';"
+    psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE heimdall TO heimdall;"
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Configure environment">
+    Copy the example environment file:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Edit `.env` with your settings (see [Configuration](/configuration) for details):
+
+    ```bash .env
+    # Required: Database connection
+    DATABASE_URL=postgres://heimdall:heimdall@localhost:5432/heimdall
+
+    # Required: At least one AI provider (BYOK)
+    ANTHROPIC_API_KEY=sk-ant-...          # Claude (recommended)
+    # OPENAI_API_KEY=sk-...               # GPT-4o
+    # OLLAMA_URL=http://localhost:11434    # Local models
+
+    # Security (generate these)
+    ENCRYPTION_KEY=$(openssl rand -hex 32)
+    WEBHOOK_SECRET=$(openssl rand -hex 20)
+    ```
+
+    Generate security keys:
+
+    ```bash
+    # Add to .env
+    echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
+    echo "WEBHOOK_SECRET=$(openssl rand -hex 20)" >> .env
+    ```
+  </Step>
+
+  <Step title="Build the project">
+    ```bash
+    cargo build
+    ```
+
+    This will download dependencies and compile Heimdall. First build takes 5-10 minutes.
+  </Step>
+
+  <Step title="Run Heimdall">
+    The database schema is applied automatically on startup:
+
+    ```bash
+    cargo run --bin heimdall
+    ```
+
+    For development with debug logging:
+
+    ```bash
+    RUST_LOG=debug cargo run --bin heimdall
+    ```
+  </Step>
+
+  <Step title="Verify installation">
+    Check the health endpoint:
+
+    ```bash
+    curl http://localhost:8080/health
+    # {"status":"ok"}
+    ```
+
+    Open `http://localhost:8080` in your browser to access the web UI.
+  </Step>
+</Steps>
+
+## Docker Compose Setup
+
+For production or simplified deployment, use Docker Compose.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/modestnerd/heimdall.git
+    cd heimdall
+    ```
+  </Step>
+
+  <Step title="Configure environment">
+    ```bash
+    cp .env.example .env
+    # Edit .env with your AI provider key(s) and security settings
+    ```
+
+    Ensure these are set:
+
+    ```bash .env
+    DATABASE_URL=postgres://heimdall:heimdall@postgres:5432/heimdall
+    ANTHROPIC_API_KEY=sk-ant-...
+    ENCRYPTION_KEY=$(openssl rand -hex 32)
+    WEBHOOK_SECRET=$(openssl rand -hex 20)
+    ```
+  </Step>
+
+  <Step title="Start Heimdall + PostgreSQL">
+    ```bash
+    docker compose --profile postgres up -d
+    ```
+
+    To build from source instead of using the pre-built image:
+
+    ```bash
+    docker compose --profile postgres up -d --build
+    ```
+  </Step>
+
+  <Step title="View logs">
+    ```bash
+    docker compose logs -f heimdall
+    ```
+
+    Press `Ctrl+C` to stop following logs.
+  </Step>
+
+  <Step title="Verify installation">
+    ```bash
+    curl http://localhost:8080/health
+    # {"status":"ok"}
+    ```
+
+    Open `http://localhost:8080` in your browser.
+  </Step>
+</Steps>
+
+### Docker Compose Profiles
+
+Heimdall supports multiple database backends via Docker Compose profiles:
+
+```bash
+# PostgreSQL (default, recommended)
+docker compose --profile postgres up -d
+
+# MySQL 8.4
+docker compose --profile mysql up -d
+
+# MongoDB 7
+docker compose --profile mongo up -d
+```
+
+<Note>
+Only use one database profile at a time. PostgreSQL is recommended for production.
+</Note>
+
+## Production Deployment
+
+### Building Release Binary
+
+For production deployment on a single machine:
+
+<Steps>
+  <Step title="Build optimized binary">
+    ```bash
+    cargo build --release
+    ```
+
+    The binary will be at `./target/release/heimdall`.
+  </Step>
+
+  <Step title="Configure environment">
+    Create a production `.env` file:
+
+    ```bash .env
+    APP_HOST=0.0.0.0
+    APP_PORT=8080
+    TLS_ENABLED=false  # Use reverse proxy for TLS
+    DATABASE_URL=postgres://heimdall:SECURE_PASSWORD@localhost:5432/heimdall
+    ANTHROPIC_API_KEY=sk-ant-...
+    ENCRYPTION_KEY=<generate-with-openssl-rand-hex-32>
+    WEBHOOK_SECRET=<generate-with-openssl-rand-hex-20>
+    WORKER_ENABLED=true
+    RUST_LOG=info,heimdall=info
+    ```
+  </Step>
+
+  <Step title="Run with systemd (recommended)">
+    Create a systemd service file `/etc/systemd/system/heimdall.service`:
+
+    ```ini
+    [Unit]
+    Description=Heimdall Security Scanner
+    After=network.target postgresql.service
+
+    [Service]
+    Type=simple
+    User=heimdall
+    WorkingDirectory=/opt/heimdall
+    EnvironmentFile=/opt/heimdall/.env
+    ExecStart=/opt/heimdall/target/release/heimdall
+    Restart=always
+    RestartSec=10
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+
+    Enable and start the service:
+
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable heimdall
+    sudo systemctl start heimdall
+    sudo systemctl status heimdall
+    ```
+  </Step>
+</Steps>
+
+### Reverse Proxy Setup (Nginx)
+
+For production, use a reverse proxy to handle TLS:
+
+```nginx /etc/nginx/sites-available/heimdall
+server {
+    listen 443 ssl http2;
+    server_name heimdall.example.com;
+
+    ssl_certificate /etc/ssl/certs/heimdall.pem;
+    ssl_certificate_key /etc/ssl/private/heimdall.key;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # SSE requires no buffering
+    location /api/scans/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+}
+
+# HTTP redirect to HTTPS
+server {
+    listen 80;
+    server_name heimdall.example.com;
+    return 301 https://$server_name$request_uri;
+}
+```
+
+Enable the site:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/heimdall /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+## Installation Verification
+
+### Check Service Health
+
+```bash
+curl http://localhost:8080/health
+# Expected: {"status":"ok"}
+```
+
+### Verify Database Connection
+
+```bash
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM users;"
+```
+
+### Verify Docker Access (for Garmr)
+
+```bash
+docker ps
+# Should list running containers without errors
+```
+
+### Test AI Provider
+
+After registration, go to Settings → AI Providers → Test Connection to verify your AI provider is working.
+
+## Data Directory Structure
+
+Heimdall stores persistent data in the configured data directory (default: `./data`):
+
+```
+data/
+├── repos/          # Cloned repository working copies
+├── uploads/        # Uploaded ZIP files
+└── logs/           # Application logs (if file logging enabled)
+```
+
+Ensure the Heimdall process has read/write permissions to this directory.
+
+## Upgrading Heimdall
+
+### Local Installation
+
+```bash
+cd heimdall
+git pull origin main
+cargo build --release
+sudo systemctl restart heimdall  # If using systemd
+```
+
+### Docker Compose
+
+```bash
+cd heimdall
+git pull origin main
+docker compose --profile postgres down
+docker compose --profile postgres up -d --build
+```
+
+<Note>
+The database schema is automatically applied on startup using idempotent DDL. No manual migrations needed.
+</Note>
+
+## Uninstalling Heimdall
+
+### Local Installation
+
+```bash
+# Stop the service
+sudo systemctl stop heimdall
+sudo systemctl disable heimdall
+sudo rm /etc/systemd/system/heimdall.service
+
+# Remove files
+rm -rf /opt/heimdall
+
+# Drop database
+dropdb heimdall
+```
+
+### Docker Compose
+
+```bash
+cd heimdall
+docker compose --profile postgres down -v  # -v removes volumes
+cd ..
+rm -rf heimdall
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure AI providers, OAuth, security settings, and workers
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first security scan
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Compilation Errors
+
+If you encounter compilation errors:
+
+```bash
+# Update Rust to latest stable
+rustup update stable
+
+# Clean build artifacts and rebuild
+cargo clean
+cargo build --release
+```
+
+### Port Already in Use
+
+If port 8080 is already in use:
+
+```bash .env
+APP_PORT=8081  # Change to any available port
+```
+
+### Docker Socket Permission Denied
+
+If Garmr cannot access Docker:
+
+```bash
+# Add user to docker group
+sudo usermod -aG docker $USER
+
+# Log out and back in, then verify
+docker info
+```
+
+### Database Migration Issues
+
+If schema application fails:
+
+```bash
+# Check database logs
+docker compose logs postgres
+
+# Manually connect and verify
+psql $DATABASE_URL
+```
+
+The schema is idempotent and safe to re-run. Simply restart Heimdall:
+
+```bash
+cargo run --bin heimdall
+```

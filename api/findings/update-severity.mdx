@@ -1,0 +1,159 @@
+---
+title: "Update Severity"
+api: "PATCH /api/findings/{id}/severity"
+description: "Modify the severity level of a finding"
+---
+
+Update the severity classification of a security finding. This operation creates a finding event to track the change history.
+
+<Note>
+  This endpoint requires authentication. The change will be recorded with the authenticated user's ID.
+</Note>
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique UUID of the finding to update
+</ParamField>
+
+## Request Body
+
+<ParamField body="severity" type="string" required>
+  The new severity level for the finding. Must be one of:
+  - `critical` - Requires immediate attention
+  - `high` - Significant risk, prioritize remediation  
+  - `medium` - Moderate risk
+  - `low` - Minor risk or informational
+</ParamField>
+
+<RequestExample>
+```json
+{
+  "severity": "high"
+}
+```
+</RequestExample>
+
+## Response
+
+Returns the updated finding information and the event that was created to track this change.
+
+<ResponseField name="data" type="object">
+  <Expandable title="Response Properties">
+    <ResponseField name="finding_id" type="string">
+      UUID of the finding that was updated
+    </ResponseField>
+    
+    <ResponseField name="old_severity" type="string">
+      The previous severity level before the update
+    </ResponseField>
+    
+    <ResponseField name="new_severity" type="string">
+      The new severity level after the update
+    </ResponseField>
+    
+    <ResponseField name="event" type="object">
+      The finding event created to track this change
+      
+      <Expandable title="Event Properties">
+        <ResponseField name="id" type="string">
+          Unique identifier for the event
+        </ResponseField>
+        
+        <ResponseField name="finding_id" type="string">
+          UUID of the associated finding
+        </ResponseField>
+        
+        <ResponseField name="user_id" type="string">
+          UUID of the user who made the change
+        </ResponseField>
+        
+        <ResponseField name="event_type" type="string">
+          Always `severity_change` for this operation
+        </ResponseField>
+        
+        <ResponseField name="old_value" type="string">
+          Previous severity value
+        </ResponseField>
+        
+        <ResponseField name="new_value" type="string">
+          New severity value
+        </ResponseField>
+        
+        <ResponseField name="comment" type="string" nullable>
+          Optional comment about the change
+        </ResponseField>
+        
+        <ResponseField name="metadata" type="object" nullable>
+          Additional structured data about the event
+        </ResponseField>
+        
+        <ResponseField name="created_at" type="string">
+          ISO 8601 timestamp when the event was created
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "success": true,
+  "data": {
+    "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+    "old_severity": "medium",
+    "new_severity": "high",
+    "event": {
+      "id": "987e6543-e89b-12d3-a456-426614174999",
+      "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+      "user_id": "555e5555-e89b-12d3-a456-426614175555",
+      "event_type": "severity_change",
+      "old_value": "medium",
+      "new_value": "high",
+      "comment": null,
+      "metadata": null,
+      "created_at": "2026-03-12T14:30:00Z"
+    }
+  }
+}
+```
+</ResponseExample>
+
+## Error Responses
+
+### 404 Not Found
+
+Returned when the specified finding does not exist.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "Finding '123e4567-e89b-12d3-a456-426614174000' not found"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when the update fails or the event cannot be recorded.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to update severity: database connection error"
+}
+```
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Severity updated but failed to record event: database error"
+}
+```
+
+<Warning>
+  If the severity is updated successfully but the event recording fails, the finding will still have the new severity value. The error message will indicate this partial success.
+</Warning>

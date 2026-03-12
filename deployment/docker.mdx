@@ -1,0 +1,328 @@
+---
+title: Docker Deployment
+description: Deploy Heimdall using Docker and Docker Compose
+---
+
+Heimdall provides first-class Docker support with multi-stage builds and flexible database options.
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/modestnerd/heimdall.git
+    cd heimdall
+    ```
+  </Step>
+
+  <Step title="Configure environment">
+    ```bash
+    cp .env.example .env
+    ```
+    
+    Edit `.env` and set at least one AI provider key:
+    ```bash
+    ANTHROPIC_API_KEY=sk-ant-...
+    # or
+    OPENAI_API_KEY=sk-...
+    # or
+    OLLAMA_URL=http://localhost:11434
+    ```
+  </Step>
+
+  <Step title="Start with Docker Compose">
+    ```bash
+    docker compose --profile postgres up -d
+    ```
+  </Step>
+
+  <Step title="Verify it's running">
+    ```bash
+    curl http://localhost:8080/health
+    # {"status":"ok"}
+    ```
+    
+    Open http://localhost:8080 in your browser.
+  </Step>
+</Steps>
+
+## Docker Compose Profiles
+
+Heimdall supports multiple database backends via Docker Compose profiles. **Only activate one database at a time.**
+
+<CodeGroup>
+
+```bash PostgreSQL (Recommended)
+docker compose --profile postgres up -d
+```
+
+```bash MySQL
+docker compose --profile mysql up -d
+```
+
+```bash MongoDB
+docker compose --profile mongo up -d
+```
+
+</CodeGroup>
+
+<Note>
+PostgreSQL is the recommended and most tested database backend.
+</Note>
+
+## Building from Source
+
+The Dockerfile uses a multi-stage build process:
+
+### Build Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `DB_DRIVER` | `postgres` | Database driver: `postgres`, `mysql`, `mongo`, or `sqlite` |
+| `INSTALL_SEMGREP` | `true` | Install Semgrep for enhanced static analysis |
+
+### Custom Build
+
+```bash
+# Build with custom database driver
+docker compose build --build-arg DB_DRIVER=mysql
+
+# Build without Semgrep (smaller image)
+docker compose build --build-arg INSTALL_SEMGREP=false
+
+# Force rebuild
+docker compose --profile postgres up -d --build
+```
+
+## Environment Configuration
+
+### Required Variables
+
+<CodeGroup>
+
+```bash Anthropic (Recommended)
+ANTHROPIC_API_KEY=sk-ant-api03-...
+```
+
+```bash OpenAI
+OPENAI_API_KEY=sk-proj-...
+```
+
+```bash Ollama (Local)
+OLLAMA_URL=http://localhost:11434
+```
+
+</CodeGroup>
+
+### Database Connection
+
+The database URL format depends on your chosen profile:
+
+<CodeGroup>
+
+```bash PostgreSQL
+DATABASE_URL=postgres://heimdall:heimdall@postgres:5432/heimdall
+```
+
+```bash MySQL
+DATABASE_URL=mysql://heimdall:heimdall@mysql:3306/heimdall
+```
+
+```bash MongoDB
+DATABASE_URL=mongodb://heimdall:heimdall@mongo:27017/heimdall
+```
+
+</CodeGroup>
+
+<Warning>
+When using Docker Compose, use the **service name** (e.g., `postgres`, `mysql`, `mongo`) as the hostname, not `localhost`.
+</Warning>
+
+### Security Keys
+
+Generate secure keys for encryption and webhook verification:
+
+```bash
+# Encryption key for stored API keys
+ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# Webhook signature verification
+WEBHOOK_SECRET=$(openssl rand -hex 20)
+```
+
+Add these to your `.env` file.
+
+## Docker Volumes
+
+Heimdall requires access to the Docker socket for the Garmr sandbox:
+
+```yaml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+```
+
+<Warning>
+Mounting the Docker socket grants the container access to create and manage other containers. Ensure proper network isolation in production environments.
+</Warning>
+
+### Persistent Data
+
+Database data is stored in named volumes:
+
+```yaml
+volumes:
+  postgres-data:    # PostgreSQL data
+  mysql-data:       # MySQL data
+  mongo-data:       # MongoDB data
+```
+
+To backup or migrate data:
+
+```bash
+# List volumes
+docker volume ls
+
+# Backup PostgreSQL data
+docker run --rm -v heimdall_postgres-data:/data -v $(pwd):/backup \
+  alpine tar czf /backup/postgres-backup.tar.gz -C /data .
+
+# Restore PostgreSQL data
+docker run --rm -v heimdall_postgres-data:/data -v $(pwd):/backup \
+  alpine tar xzf /backup/postgres-backup.tar.gz -C /data
+```
+
+## Health Checks
+
+Heimdall includes built-in health checks:
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 10s
+```
+
+Check container health:
+
+```bash
+docker compose ps
+docker inspect heimdall | jq '.[0].State.Health'
+```
+
+## Troubleshooting
+
+### Container won't start
+
+<Steps>
+  <Step title="Check logs">
+    ```bash
+    docker compose logs -f heimdall
+    ```
+  </Step>
+
+  <Step title="Verify database is ready">
+    ```bash
+    docker compose ps
+    # Ensure database service shows "healthy"
+    ```
+  </Step>
+
+  <Step title="Check environment variables">
+    ```bash
+    docker compose config
+    # Verify .env values are loaded correctly
+    ```
+  </Step>
+</Steps>
+
+### Database connection fails
+
+<Warning>
+**Common mistake:** Using `localhost` instead of the service name in `DATABASE_URL`.
+</Warning>
+
+```bash
+# ❌ Wrong (when using Docker Compose)
+DATABASE_URL=postgres://heimdall:heimdall@localhost:5432/heimdall
+
+# ✅ Correct
+DATABASE_URL=postgres://heimdall:heimdall@postgres:5432/heimdall
+```
+
+### Permission denied on Docker socket
+
+```bash
+# Add your user to the docker group
+sudo usermod -aG docker $USER
+
+# Log out and back in, then verify
+docker ps
+```
+
+### Out of memory errors
+
+Increase Docker daemon memory limits:
+
+```bash
+# Docker Desktop: Settings > Resources > Memory (recommend 4GB+)
+
+# Linux: Edit /etc/docker/daemon.json
+{
+  "default-ulimits": {
+    "memlock": {
+      "Hard": -1,
+      "Soft": -1
+    }
+  }
+}
+```
+
+### Semgrep not working
+
+Rebuild with Semgrep enabled:
+
+```bash
+docker compose build --build-arg INSTALL_SEMGREP=true --no-cache
+docker compose up -d
+```
+
+### Clean slate restart
+
+<Warning>
+This will delete all data, including scans and findings.
+</Warning>
+
+```bash
+# Stop and remove containers, volumes, and images
+docker compose down -v --rmi all
+
+# Rebuild and start fresh
+docker compose --profile postgres up -d --build
+```
+
+## Development Workflow
+
+For local development, use `docker-compose.dev.yml` to run only the database:
+
+```bash
+# Start only PostgreSQL
+docker compose -f docker-compose.dev.yml up -d
+
+# Run Heimdall locally
+cargo run --bin heimdall
+```
+
+This allows faster iteration with hot reloading while keeping the database containerized.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Production Deployment" icon="rocket" href="/deployment/production">
+    Harden your deployment for production use
+  </Card>
+  <Card title="Reverse Proxy Setup" icon="server" href="/deployment/reverse-proxy">
+    Configure Nginx with TLS and SSE support
+  </Card>
+</CardGroup>

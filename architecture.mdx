@@ -1,0 +1,901 @@
+---
+title: "Architecture"
+description: "System architecture, tech stack, and component interaction in Heimdall"
+---
+
+Heimdall is built as a **monolithic Rust application** with an embedded web server, background worker, and modular pipeline architecture. All components share a single PostgreSQL database and communicate via in-memory channels for real-time updates.
+
+## High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph Browser
+        HTMX[HTMX + Tailwind CSS]
+    end
+    
+    subgraph "Heimdall Server (Actix-web)"
+        Routes[HTTP Routes]
+        Templates[minijinja Templates]
+        SSE[SSE Broadcaster]
+        Middleware[Auth + CSRF Middleware]
+        
+        subgraph "Core Pipeline"
+            Pipeline[ScanPipeline Orchestrator]
+            Ingest[Ingest Stage]
+            Tyr[Tyr: Threat Model]
+            Static[Static Analysis]
+            Hunt[Hunt: Agentic Discovery]
+            Vidarr[Víðarr: Adversarial Filter]
+            Garmr[Garmr: Sandbox]
+            Report[Report: Patches]
+        end
+        
+        subgraph "Code Analysis"
+            CodeIndex[CodeIndex]
+            Symbols[Symbol Extraction]
+            CallGraph[Call Graph]
+            Search[Full-Text Search]
+            DepGraph[Dependency Graph]
+        end
+        
+        subgraph "AI Backend"
+            ModelProvider[ModelProvider Trait]
+            Fallback[FallbackProvider]
+            Claude[ClaudeProvider]
+            OpenAI[OpenAiProvider]
+            Ollama[OllamaProvider]
+        end
+        
+        Worker[Background Scan Worker]
+    end
+    
+    subgraph Storage
+        PG[(PostgreSQL)]
+        FS[Filesystem: Cloned Repos]
+    end
+    
+    subgraph External
+        Docker[Docker Engine]
+        GitHub[GitHub/GitLab OAuth]
+    end
+    
+    HTMX <-->|HTML fragments| Routes
+    Routes --> Templates
+    Routes --> Middleware
+    Routes --> SSE
+    Worker -->|Poll for queued scans| PG
+    Worker --> Pipeline
+    Pipeline --> Ingest
+    Ingest --> Tyr
+    Tyr --> Static
+    Static --> Hunt
+    Hunt --> Vidarr
+    Vidarr --> Garmr
+    Garmr --> Report
+    
+    Ingest --> CodeIndex
+    Hunt --> CodeIndex
+    Vidarr --> CodeIndex
+    Report --> CodeIndex
+    
+    Tyr --> ModelProvider
+    Hunt --> ModelProvider
+    Vidarr --> ModelProvider
+    Garmr --> ModelProvider
+    Report --> ModelProvider
+    
+    ModelProvider --> Fallback
+    Fallback --> Claude
+    Fallback --> OpenAI
+    Fallback --> Ollama
+    
+    Pipeline --> PG
+    Ingest --> FS
+    Garmr --> Docker
+    Routes --> GitHub
+    
+    CodeIndex --> Symbols
+    CodeIndex --> CallGraph
+    CodeIndex --> Search
+    CodeIndex --> DepGraph
+```
+
+---
+
+## Core Components
+
+### Web Server (Actix-web)
+
+The HTTP layer is built on **Actix-web 4**, a high-performance async web framework for Rust.
+
+#### Key modules:
+- **`src/main.rs`**: Server bootstrap, database connection, schema application
+- **`src/routes/`**: HTTP handlers for pages, API endpoints, webhooks
+- **`src/middleware/`**: Authentication (session cookies), CSRF protection
+- **`src/templates.rs`**: minijinja template engine for server-rendered HTML
+- **`src/sse.rs`**: Server-Sent Events broadcaster for real-time scan progress
+
+#### Request flow:
+```rust
+// src/main.rs
+HttpServer::new(move || {
+    App::new()
+        .app_data(app_state.clone())
+        .wrap(Cors::default())
+        .wrap(CsrfProtection)
+        .wrap(actix_middleware::Logger::default())
+        .service(actix_files::Files::new("/static", "static"))
+        .configure(routes::init)
+})
+.bind(("0.0.0.0", 8080))?
+.run()
+.await
+```
+
+<Note>
+  Heimdall uses **HTMX** for dynamic UI updates without JavaScript frameworks. The server returns **HTML fragments** that HTMX swaps into the page.
+</Note>
+
+---
+
+### Pipeline Orchestrator
+
+The **`ScanPipeline`** struct orchestrates the 7-stage scan lifecycle with proper error handling, status tracking, and SSE event emission.
+
+#### Located in: `src/pipeline/mod.rs`
+
+```rust
+pub struct ScanPipeline {
+    pub scan_id: uuid::Uuid,
+    pub db: Arc<DatabaseOperations>,
+    pub ai: Arc<dyn ModelProvider>,
+    pub default_model: String,
+    pub sse: Arc<ScanBroadcaster>,
+    pub encryption_key: Option<[u8; 32]>,
+    pub data_dir: String,
+}
+
+impl ScanPipeline {
+    pub async fn run(&self, repo: &Repo) -> HeimdallResult<()> {
+        // Stage 1: Ingest
+        let ingest_output = self.run_stage("ingest", "ingesting", "ingested", async {
+            let stage = ingest::IngestStage::new(...);
+            stage.run(repo).await
+        }).await?;
+        
+        // Stage 2: Tyr (Threat Model)
+        let threat_model = self.run_stage("tyr", "modeling", "modeled", async {
+            let stage = tyr::TyrStage::new(...);
+            stage.run(&code_index).await
+        }).await?;
+        
+        // ... continues through all 7 stages
+    }
+}
+```
+
+#### Stage execution wrapper:
+Every stage runs through `run_stage()` which:
+1. Checks for scan cancellation
+2. Creates a `scan_stages` record in the database
+3. Updates scan status (e.g., `"running"` → `"ingesting"`)
+4. Emits SSE events (`stage_update`, `status_change`)
+5. Executes the stage logic
+6. Handles errors and updates status to `"failed"` or `"completed"`
+
+---
+
+### AI Backend (Model-Agnostic)
+
+Heimdall abstracts AI providers behind the **`ModelProvider`** trait:
+
+```rust
+// src/ai/mod.rs
+#[async_trait]
+pub trait ModelProvider: Send + Sync {
+    async fn complete(&self, request: CompletionRequest) -> HeimdallResult<CompletionResponse>;
+    fn provider_name(&self) -> &str;
+}
+```
+
+#### Supported providers:
+<CardGroup cols={3}>
+  <Card title="Anthropic Claude" icon="bolt">
+    Native `tool_use` format
+    
+    Default: `claude-sonnet-4-20250514`
+    
+    **Recommended** for security analysis
+  </Card>
+  
+  <Card title="OpenAI GPT" icon="circle">
+    Function calling format
+    
+    Models: `gpt-4o`, `o1`, `o3`
+    
+    Compatible with Azure OpenAI
+  </Card>
+  
+  <Card title="Ollama (Local)" icon="server">
+    Local inference, no API key
+    
+    Models: Llama 3.3, Mistral, DeepSeek, Qwen
+    
+    Runs on `http://localhost:11434`
+  </Card>
+</CardGroup>
+
+#### Automatic fallback:
+The `FallbackProvider` chains multiple providers together:
+
+```rust
+// src/ai/fallback.rs
+pub struct FallbackProvider {
+    providers: Vec<(Box<dyn ModelProvider>, String)>, // (provider, model)
+}
+
+impl FallbackProvider {
+    pub async fn complete(&self, mut request: CompletionRequest) -> HeimdallResult<CompletionResponse> {
+        let mut last_error = None;
+        
+        for (provider, model) in &self.providers {
+            request.model = model.clone();
+            match provider.complete(request.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(e) if is_retryable(&e) => {
+                    log::warn!("Provider {} failed (retryable), trying next: {}", provider.provider_name(), e);
+                    last_error = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(e), // Non-retryable errors propagate immediately
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No providers configured")))
+    }
+}
+```
+
+#### Retryable errors:
+- HTTP 429 (rate limit)
+- HTTP 500, 502, 503, 529 (server errors)
+- Billing/quota exhaustion
+- Connection failures
+
+**Priority order**: Anthropic → OpenAI → Ollama
+
+<Warning>
+  Every LLM call is logged to the `agent_tool_calls` table with the actual `provider` and `model` used, so you always know which provider served each request.
+</Warning>
+
+---
+
+### Code Index (tree-sitter)
+
+The **`CodeIndex`** is the foundation for all code analysis stages. It provides:
+
+#### Symbol extraction:
+```rust
+// src/index/symbols.rs
+pub fn extract_symbols(content: &str, language: &str, file: &str) -> Vec<Symbol> {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(match language {
+        "rust" => tree_sitter_rust::language(),
+        "python" => tree_sitter_python::language(),
+        "javascript" => tree_sitter_javascript::language(),
+        "typescript" => tree_sitter_typescript::language_typescript(),
+        "go" => tree_sitter_go::language(),
+        "java" => tree_sitter_java::language(),
+        _ => return vec![],
+    }).unwrap();
+    
+    let tree = parser.parse(content, None).unwrap();
+    let root = tree.root_node();
+    
+    let mut symbols = Vec::new();
+    walk_ast(&root, content, file, &mut symbols);
+    symbols
+}
+```
+
+#### Data structures:
+```rust
+pub struct CodeIndex {
+    pub root: PathBuf,
+    pub files: HashMap<String, IndexedFile>,
+    pub symbols: SymbolIndex,       // Function/class lookup
+    pub callgraph: CallGraph,       // "Who calls this?"
+    pub deps: DependencyGraph,      // Import/require resolution
+    pub search: SearchIndex,        // Full-text regex search
+}
+
+pub struct Symbol {
+    pub name: String,
+    pub kind: String,               // "function", "class", "method", etc.
+    pub file: String,
+    pub line: usize,
+    pub is_public: bool,
+    pub is_entry_point: bool,       // main(), route handlers
+    pub calls: Vec<String>,         // Functions called by this symbol
+}
+```
+
+#### Call graph queries:
+```rust
+let callers = code_index.callgraph.get_callers("execute_query");
+// Returns: [("src/routes/api.rs", 42), ("src/services/user.rs", 103)]
+```
+
+This powers the Hunt agent's `get_callers` tool and Víðarr's reachability analysis.
+
+---
+
+### Database Layer (PostgreSQL)
+
+All scan metadata, findings, and artifacts are stored in PostgreSQL.
+
+#### Schema highlights:
+- **`users`**: Authentication, session management
+- **`repos`**: Repository metadata, OAuth connections
+- **`scans`**: Scan lifecycle (status, timestamps, finding counts)
+- **`scan_stages`**: Per-stage tracking (ingest, tyr, hunt, etc.)
+- **`scan_events`**: Granular event log for UI timeline
+- **`findings`**: Vulnerabilities with severity, confidence, patches
+- **`patches`**: Suggested remediation diffs (unified diff format)
+- **`threat_models`**: Tyr's structured output (boundaries, surfaces, data flows)
+- **`file_snapshots`**: Content hashes and metadata for scanned files
+- **`agent_tool_calls`**: LLM request/response logging with token usage
+- **`api_keys`**: Encrypted user-provided AI provider keys
+- **`oauth_connections`**: GitHub/GitLab access tokens
+
+#### Entity relationships:
+```mermaid
+erDiagram
+    users ||--o{ repos : owns
+    users ||--o{ api_keys : has
+    users ||--o{ sessions : has
+    repos ||--o{ scans : has
+    repos ||--o{ oauth_connections : linked
+    scans ||--o{ scan_stages : tracks
+    scans ||--o{ scan_events : logs
+    scans ||--o{ findings : produces
+    scans ||--o{ threat_models : generates
+    scans ||--o{ file_snapshots : indexes
+    scans ||--o{ agent_tool_calls : records
+    findings ||--o{ patches : has
+    findings ||--o{ finding_events : has
+    findings ||--o{ repo_issues : links
+```
+
+#### Schema DSL:
+Heimdall uses a custom **schema definition DSL** that generates idempotent DDL:
+
+```rust
+// src/db/schema/definition.rs
+Schema::new()
+    .extension("pgcrypto")
+    .table("scans", |t| {
+        t.uuid_pk("id");
+        t.uuid("repo_id").not_null().references("repos", "id");
+        t.text("status").not_null().default_str("'queued'");
+        t.text("commit_sha");
+        t.integer("finding_count").not_null().default_int(0);
+        t.integer("critical_count").not_null().default_int(0);
+        t.timestamps();
+    })
+    .index("idx_scans_repo_id", "scans", &["repo_id"])
+    .build()
+```
+
+On startup, Heimdall runs:
+```sql
+CREATE TABLE IF NOT EXISTS scans (...);
+CREATE INDEX IF NOT EXISTS idx_scans_repo_id ON scans (repo_id);
+```
+
+No migration files or tracking tables needed — safe to run repeatedly.
+
+---
+
+### Background Worker
+
+The **`ScanWorker`** polls the database every 5 seconds for `queued` scans and executes them in the background.
+
+```rust
+// src/worker.rs
+pub struct ScanWorker {
+    app_state: Arc<AppState>,
+    poll_interval: Duration,
+    stale_timeout_mins: i32,
+}
+
+impl ScanWorker {
+    pub async fn run(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(self.poll_interval);
+        loop {
+            interval.tick().await;
+            
+            // Mark stale scans as failed
+            let _ = self.app_state.db.mark_stale_scans_as_failed(self.stale_timeout_mins).await;
+            
+            // Find next queued scan
+            let Some(scan) = self.app_state.db.get_next_queued_scan().await.ok().flatten() else {
+                continue;
+            };
+            
+            // Execute pipeline
+            let state = Arc::clone(&self.app_state);
+            tokio::spawn(async move {
+                let result = execute_scan(&state, scan.id).await;
+                if let Err(e) = result {
+                    log::error!("Scan {} failed: {}", scan.id, e);
+                }
+            });
+        }
+    }
+}
+```
+
+#### Concurrency:
+- **One worker per server instance**
+- Scans run **sequentially** (next scan starts after previous completes)
+- Within a scan, Hunt agents run **in parallel** via `tokio::spawn`
+
+<Note>
+  Set `WORKER_ENABLED=false` to disable the background worker (useful for horizontal scaling with dedicated worker nodes).
+</Note>
+
+---
+
+## Tech Stack
+
+### Backend
+<CardGroup cols={2}>
+  <Card title="Language" icon="rust">
+    **Rust 2024 edition**
+    
+    Memory safety, performance, fearless concurrency
+  </Card>
+  
+  <Card title="Web Framework" icon="globe">
+    **Actix-web 4**
+    
+    High-performance async HTTP server
+  </Card>
+  
+  <Card title="Database" icon="database">
+    **PostgreSQL 14+**
+    
+    Schema applied via custom DSL (no migrations)
+  </Card>
+  
+  <Card title="Async Runtime" icon="bolt">
+    **Tokio**
+    
+    Multi-threaded async executor
+  </Card>
+</CardGroup>
+
+### Code Analysis
+<CardGroup cols={2}>
+  <Card title="AST Parsing" icon="tree">
+    **tree-sitter**
+    
+    Incremental parsing for 6 languages (Rust, Python, JS, TS, Go, Java)
+  </Card>
+  
+  <Card title="Pattern Matching" icon="magnifying-glass">
+    **Regex + tree-sitter queries**
+    
+    Fast static analysis rules
+  </Card>
+</CardGroup>
+
+### AI & Orchestration
+<CardGroup cols={2}>
+  <Card title="AI Providers" icon="brain">
+    **Claude, OpenAI, Ollama**
+    
+    Automatic fallback between providers
+  </Card>
+  
+  <Card title="Sandbox" icon="docker">
+    **Docker (bollard SDK)**
+    
+    Isolated PoC execution in containers
+  </Card>
+</CardGroup>
+
+### Frontend
+<CardGroup cols={2}>
+  <Card title="HTML Rendering" icon="code">
+    **minijinja**
+    
+    Server-side templates (Jinja2 syntax)
+  </Card>
+  
+  <Card title="Dynamic UI" icon="arrows-spin">
+    **HTMX + Tailwind CSS**
+    
+    HTML-over-the-wire, no JavaScript build step
+  </Card>
+</CardGroup>
+
+### Security
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="lock">
+    **Argon2id + session cookies**
+    
+    CSRF double-submit cookie protection
+  </Card>
+  
+  <Card title="Encryption" icon="key">
+    **AES-256-GCM**
+    
+    Encrypts stored API keys at rest
+  </Card>
+</CardGroup>
+
+---
+
+## Data Flow: Complete Scan Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as User (Browser)
+    participant W as Web Server
+    participant BG as Background Worker
+    participant P as ScanPipeline
+    participant AI as AI Provider
+    participant D as Docker
+    participant DB as PostgreSQL
+    participant SSE as SSE Channel
+    
+    U->>W: POST /api/repos/{id}/scan
+    W->>DB: INSERT INTO scans (status='queued')
+    W->>U: 202 Accepted
+    
+    BG->>DB: Poll for queued scans
+    DB-->>BG: scan_id={uuid}
+    BG->>P: pipeline.run(repo)
+    
+    P->>DB: UPDATE scans SET status='ingesting'
+    P->>SSE: emit_status_change('ingesting')
+    P->>P: Clone repo, extract symbols
+    P->>DB: INSERT INTO file_snapshots
+    
+    P->>AI: Generate threat model (Tyr)
+    AI-->>P: {boundaries, surfaces, data_flows}
+    P->>DB: INSERT INTO threat_models
+    
+    P->>P: Static analysis rules
+    P->>DB: INSERT INTO findings (source='static')
+    
+    par Hunt (Parallel Agents)
+        P->>AI: Investigate surface 1
+        P->>AI: Investigate surface 2
+        P->>AI: Investigate surface 3
+    end
+    AI-->>P: findings
+    P->>DB: INSERT INTO findings (source='ai')
+    P->>SSE: emit_finding_added()
+    
+    P->>AI: Challenge findings (Víðarr)
+    AI-->>P: verdicts
+    P->>DB: UPDATE findings SET status='false_positive' WHERE ...
+    
+    P->>AI: Generate PoC scripts (Garmr)
+    AI-->>P: Python/Bash scripts
+    P->>D: Create container, execute PoC
+    D-->>P: stdout, stderr, exit_code
+    P->>AI: Interpret results
+    AI-->>P: verdict='confirmed'
+    P->>DB: UPDATE findings SET poc_validated=true
+    
+    P->>AI: Generate patches (Report)
+    AI-->>P: Unified diffs
+    P->>DB: INSERT INTO patches
+    
+    P->>DB: UPDATE scans SET status='completed'
+    P->>SSE: emit_scan_complete()
+    
+    SSE-->>U: SSE events (live updates)
+```
+
+---
+
+## Deployment Architecture
+
+### Single-Server Deployment (Recommended for getting started)
+
+```
+┌─────────────────────────────────────┐
+│         Heimdall Server             │
+│  ┌──────────────────────────────┐   │
+│  │   Actix-web (Port 8080)      │   │
+│  └──────────────────────────────┘   │
+│  ┌──────────────────────────────┐   │
+│  │   Background Worker          │   │
+│  └──────────────────────────────┘   │
+│  ┌──────────────────────────────┐   │
+│  │   PostgreSQL Client          │   │
+│  └──────────────────────────────┘   │
+│  ┌──────────────────────────────┐   │
+│  │   Docker Client (Garmr)      │   │
+│  └──────────────────────────────┘   │
+└─────────────────────────────────────┘
+          │               │
+          ├───────────────┤
+          ▼               ▼
+    PostgreSQL       Docker Engine
+    (External)        (Local/Remote)
+```
+
+### Horizontal Scaling (For high load)
+
+```
+         ┌──────────────┐
+         │   Nginx /    │
+         │ Load Balancer│
+         └──────┬───────┘
+                │
+     ┌──────────┼──────────┐
+     ▼          ▼          ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐
+│ Web 1   │ │ Web 2   │ │ Web N   │
+│ (API)   │ │ (API)   │ │ (API)   │
+│ WORKER  │ │ WORKER  │ │ WORKER  │
+│ DISABLED│ │ DISABLED│ │ DISABLED│
+└────┬────┘ └────┬────┘ └────┬────┘
+     │           │           │
+     └───────────┼───────────┘
+                 ▼
+          ┌──────────────┐
+          │  PostgreSQL  │
+          │   (Shared)   │
+          └──────────────┘
+                 ▲
+                 │
+         ┌───────┴────────┐
+         ▼                ▼
+    ┌─────────┐      ┌─────────┐
+    │Worker 1 │      │Worker N │
+    │(Scans)  │      │(Scans)  │
+    └─────────┘      └─────────┘
+```
+
+**Configuration**:
+- Web nodes: `WORKER_ENABLED=false`
+- Worker nodes: `WORKER_ENABLED=true`
+- Shared PostgreSQL for coordination
+
+---
+
+## Security Considerations
+
+<AccordionGroup>
+  <Accordion title="API Key Storage">
+    User-provided AI keys are encrypted with **AES-256-GCM** using a server-side encryption key:
+    
+    ```bash
+    ENCRYPTION_KEY=$(openssl rand -hex 32)
+    ```
+    
+    Keys are never logged or exposed in API responses.
+  </Accordion>
+  
+  <Accordion title="OAuth Token Handling">
+    GitHub/GitLab access tokens are:
+    - Encrypted with `ENCRYPTION_KEY` before storage
+    - Decrypted only during repository cloning
+    - Embedded in clone URLs as `https://oauth2:{token}@github.com/...`
+    - Never persisted in cloned repositories (stripped after clone)
+  </Accordion>
+  
+  <Accordion title="Sandbox Isolation (Garmr)">
+    PoC scripts run in **isolated Docker containers** with:
+    - No network access (`--network none`)
+    - Read-only repository mount
+    - Non-root user (`nobody`)
+    - CPU and memory limits
+    - 30-second timeout
+    
+    Containers are **destroyed immediately** after execution.
+  </Accordion>
+  
+  <Accordion title="CSRF Protection">
+    All state-changing requests require a valid CSRF token via **double-submit cookie** pattern:
+    
+    ```rust
+    // Middleware validates:
+    // 1. CSRF cookie is present
+    // 2. X-CSRF-Token header matches cookie
+    // 3. Token has valid signature
+    ```
+  </Accordion>
+  
+  <Accordion title="Session Management">
+    - Argon2id password hashing (work factor: 19, memory: 64MB)
+    - Session tokens stored as SHA-256 hashes
+    - Automatic expiration after 7 days
+    - Background cleanup job runs hourly
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Environment Variables Reference
+
+### Server
+```bash
+APP_HOST=0.0.0.0                        # Bind address
+APP_PORT=8080                           # Listen port
+CORS_ALLOWED_ORIGIN=http://localhost:8080
+```
+
+### Database
+```bash
+DATABASE_URL=postgres://heimdall:heimdall@localhost:5432/heimdall
+```
+
+### AI Providers (at least one required)
+```bash
+ANTHROPIC_API_KEY=sk-ant-...            # Claude (recommended)
+OPENAI_API_KEY=sk-...                   # GPT-4o
+OLLAMA_URL=http://localhost:11434       # Local models
+DEFAULT_AI_MODEL=claude-sonnet-4-20250514
+```
+
+### Security
+```bash
+ENCRYPTION_KEY=$(openssl rand -hex 32)  # AES-256-GCM key (64 hex chars)
+WEBHOOK_SECRET=$(openssl rand -hex 20)  # GitHub/GitLab webhook verification
+```
+
+### Worker
+```bash
+WORKER_ENABLED=true                     # Enable background scan worker
+WORKER_POLL_INTERVAL_SECS=5             # Poll frequency
+WORKER_STALE_TIMEOUT_MINS=10            # Mark stuck scans as failed
+```
+
+### Logging
+```bash
+RUST_LOG=info,heimdall=debug            # Log level (env_logger syntax)
+```
+
+---
+
+## Performance Tuning
+
+<CardGroup cols={2}>
+  <Card title="Database Connection Pool" icon="database">
+    ```rust
+    PgPoolOptions::new()
+        .max_connections(5)  // Default
+        .connect(&database_url)
+    ```
+    
+    Increase for high concurrency
+  </Card>
+  
+  <Card title="Hunt Agent Parallelism" icon="bolt">
+    ```rust
+    for surface in threat_model.surfaces {
+        tokio::spawn(async move {
+            agent.investigate(&surface, ...)
+        });
+    }
+    ```
+    
+    Automatic parallel execution
+  </Card>
+  
+  <Card title="SSE Buffer Size" icon="arrows-spin">
+    ```rust
+    broadcast::channel(100)  // Default
+    ```
+    
+    Increase if clients lag behind
+  </Card>
+  
+  <Card title="Docker Resource Limits" icon="docker">
+    ```rust
+    nano_cpus: 1_000_000_000,  // 1 CPU
+    memory: 512 * 1024 * 1024, // 512MB
+    timeout: 30s
+    ```
+    
+    Tune for PoC complexity
+  </Card>
+</CardGroup>
+
+---
+
+## Directory Structure
+
+```
+heimdall/
+├── src/
+│   ├── main.rs                 # Entry point, server startup
+│   ├── lib.rs                  # Public module exports
+│   ├── config.rs               # Environment config
+│   ├── state.rs                # AppState (shared across handlers)
+│   ├── auth/                   # Password hashing, session tokens
+│   ├── crypto.rs               # AES-256-GCM encrypt/decrypt
+│   ├── sse.rs                  # Server-Sent Events broadcaster
+│   ├── db/
+│   │   ├── mod.rs              # DatabaseOperations (all queries)
+│   │   └── schema/             # Schema DSL + DDL generators
+│   ├── models/                 # Domain types, API wrappers
+│   ├── routes/
+│   │   ├── mod.rs              # Route registration
+│   │   ├── pages.rs            # HTML page handlers
+│   │   ├── auth.rs             # Login, register, OAuth
+│   │   ├── repos.rs            # Repository CRUD + scan trigger
+│   │   ├── scans.rs            # Scan queries + SSE stream
+│   │   ├── findings.rs         # Finding CRUD + events
+│   │   ├── settings.rs         # User settings + API keys
+│   │   └── webhooks.rs         # GitHub/GitLab webhooks
+│   ├── middleware/
+│   │   ├── auth.rs             # Session auth middleware
+│   │   └── csrf.rs             # CSRF double-submit cookie
+│   ├── pipeline/
+│   │   ├── mod.rs              # ScanPipeline orchestrator
+│   │   ├── ingest/             # Stage 1: Clone + index
+│   │   ├── tyr/                # Stage 2: Threat modeling
+│   │   ├── static_analysis/    # Stage 3: Pattern rules
+│   │   ├── hunt/               # Stage 4: Agentic discovery
+│   │   ├── vidarr/             # Stage 5: Adversarial verification
+│   │   ├── garmr/              # Stage 6: Sandbox validation
+│   │   └── report/             # Stage 7: Patches + ranking
+│   ├── worker.rs               # Background scan worker
+│   ├── integrations/
+│   │   └── issues.rs           # GitHub/GitLab issue creation
+│   ├── ai/
+│   │   ├── mod.rs              # ModelProvider trait + builder
+│   │   ├── types.rs            # Request/response types
+│   │   ├── claude.rs           # Anthropic provider
+│   │   ├── openai.rs           # OpenAI provider
+│   │   ├── ollama.rs           # Ollama provider
+│   │   └── fallback.rs         # FallbackProvider (auto-retry)
+│   └── index/
+│       ├── mod.rs              # CodeIndex (unified)
+│       ├── symbols.rs          # tree-sitter symbol extraction
+│       ├── callgraph.rs        # Call graph
+│       ├── deps.rs             # Dependency graph
+│       └── search.rs           # Full-text search
+├── templates/
+│   ├── base.html               # Master layout
+│   ├── pages/                  # Full page templates
+│   └── partials/               # Reusable components
+├── static/                     # CSS, JS, images
+├── migrations/active/          # Generated DDL (optional)
+├── tests/                      # Integration tests
+├── Cargo.toml
+├── Dockerfile
+├── docker-compose.yml          # Production stack
+└── docker-compose.dev.yml      # Dev database only
+```
+
+---
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get Heimdall running locally in 5 minutes
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure AI providers, OAuth, and security settings
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/authentication/register">
+    REST API endpoints for programmatic access
+  </Card>
+  
+  <Card title="Deployment" icon="server" href="/deployment/docker">
+    Production deployment with Docker, Nginx, and horizontal scaling
+  </Card>
+</CardGroup>

@@ -1,0 +1,271 @@
+---
+title: 'Scan Pipeline'
+description: 'How Heimdall orchestrates the complete security analysis workflow'
+icon: 'gears'
+---
+
+The Heimdall scan pipeline is a sophisticated multi-stage process that transforms your raw source code into actionable security findings. Each scan runs through up to **9 sequential stages**, orchestrated by the `ScanPipeline` in `src/pipeline/mod.rs`.
+
+## Pipeline Overview
+
+Every scan follows this progression:
+
+<Steps>
+  <Step title="Ingest" icon="download">
+    Clone the repository and build a searchable code index
+  </Step>
+  <Step title="Tyr (Threat Model)" icon="shield">
+    Generate a STRIDE-based threat model with attack surfaces and trust boundaries
+  </Step>
+  <Step title="Static Analysis" icon="magnifying-glass">
+    Run pattern-based vulnerability detection (Semgrep, etc.)
+  </Step>
+  <Step title="Taint Analysis" icon="droplet">
+    Trace data flows from user inputs to dangerous sinks
+  </Step>
+  <Step title="Config Scan" icon="file-lines">
+    Analyze IaC and configuration files for misconfigurations
+  </Step>
+  <Step title="Hunt (Agentic Discovery)" icon="crosshairs">
+    Deploy AI agents to investigate each attack surface
+  </Step>
+  <Step title="Víðarr (Adversarial Verification)" icon="scale-balanced">
+    Challenge and validate findings with skeptical analysis
+  </Step>
+  <Step title="Garmr (Sandbox Validation)" icon="flask">
+    Execute proof-of-concept exploits in isolated containers
+  </Step>
+  <Step title="Report" icon="file-chart-column">
+    Generate executive summaries and remediation guidance
+  </Step>
+</Steps>
+
+## Stage Architecture
+
+Each stage is implemented as a self-contained module:
+
+```rust src/pipeline/mod.rs
+pub async fn run(&self, repo: &Repo) -> HeimdallResult<()> {
+    info!("Starting scan pipeline for scan_id={}", self.scan_id);
+
+    // Stage 1: Ingest
+    let ingest_output = self.run_stage("ingest", "ingesting", "ingested", async {
+        let stage = ingest::IngestStage::new(
+            self.scan_id,
+            Arc::clone(&self.db),
+            self.encryption_key,
+            self.data_dir.clone(),
+        );
+        stage.run(repo).await
+    }).await?;
+
+    let code_index = Arc::new(ingest_output.code_index);
+
+    // Stage 2: Tyr (Threat Model)
+    let threat_model = self.run_stage("tyr", "modeling", "modeled", async {
+        let stage = tyr::TyrStage::new(
+            self.scan_id,
+            repo.id,
+            Arc::clone(&self.db),
+            Arc::clone(&self.ai),
+            self.default_model.clone(),
+        );
+        stage.run(&code_index).await
+    }).await?;
+
+    // ... additional stages follow
+}
+```
+
+<Note>
+  Each stage produces artifacts that downstream stages consume. For example, the **Tyr** threat model guides the **Hunt** agent's investigations.
+</Note>
+
+## Monitoring Progress
+
+Heimdall provides real-time visibility into scan execution through multiple channels:
+
+### Server-Sent Events (SSE)
+
+Connect to the SSE endpoint to receive live updates:
+
+```bash
+curl -N -H "Authorization: Bearer YOUR_TOKEN" \
+  https://app.heimdall.security/api/v1/scans/{scan_id}/events
+```
+
+You'll receive events like:
+
+```json
+{
+  "event": "stage_update",
+  "data": {
+    "stage": "hunt",
+    "status": "running",
+    "message": "Investigating attack surface: Admin panel authentication"
+  }
+}
+```
+
+### Scan Events Table
+
+Query the `scan_events` table for a complete audit trail:
+
+<CodeGroup>
+```sql PostgreSQL
+SELECT stage, task_key, status, title, detail, progress_pct, created_at
+FROM scan_events
+WHERE scan_id = 'YOUR_SCAN_ID'
+ORDER BY created_at ASC;
+```
+
+```typescript API
+const events = await fetch(
+  `/api/v1/scans/${scanId}/events?limit=100`
+).then(r => r.json());
+
+console.log(events);
+```
+</CodeGroup>
+
+### Stage Status Tracking
+
+Each stage records detailed status in the `scan_stages` table:
+
+| Field | Description |
+|-------|-------------|
+| `stage` | Stage name (e.g., `hunt`, `tyr`, `garmr`) |
+| `status` | Current status: `pending`, `running`, `completed`, `failed` |
+| `started_at` | Timestamp when execution began |
+| `completed_at` | Timestamp when execution finished |
+| `error_message` | Failure reason if status is `failed` |
+
+## Expected Timeframes
+
+Scan duration varies based on repository size and complexity:
+
+<AccordionGroup>
+  <Accordion title="Small Repositories (< 10k LOC)" icon="bolt">
+    **Total Duration:** 2-5 minutes
+    
+    - Ingest: 10-20 seconds
+    - Tyr: 30-60 seconds
+    - Static Analysis: 20-40 seconds
+    - Hunt: 1-2 minutes
+    - Garmr: 30-60 seconds
+    - Report: 20-30 seconds
+  </Accordion>
+
+  <Accordion title="Medium Repositories (10k-100k LOC)" icon="gauge">
+    **Total Duration:** 5-15 minutes
+    
+    - Ingest: 30-90 seconds
+    - Tyr: 60-120 seconds
+    - Static Analysis: 1-3 minutes
+    - Hunt: 3-8 minutes
+    - Garmr: 1-2 minutes
+    - Report: 30-60 seconds
+  </Accordion>
+
+  <Accordion title="Large Repositories (> 100k LOC)" icon="rocket">
+    **Total Duration:** 15-45 minutes
+    
+    - Ingest: 2-5 minutes
+    - Tyr: 2-4 minutes
+    - Static Analysis: 3-8 minutes
+    - Hunt: 8-25 minutes (parallel investigations)
+    - Garmr: 2-5 minutes
+    - Report: 1-2 minutes
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  The **Hunt** stage scales with the number of attack surfaces identified by Tyr. Codebases with many API endpoints or complex authentication flows will take longer to analyze.
+</Warning>
+
+## Error Handling
+
+The pipeline implements robust error handling with graceful degradation:
+
+```rust src/pipeline/mod.rs
+async fn run_stage<T, F>(
+    &self,
+    stage_name: &str,
+    status_running: &str,
+    status_done: &str,
+    future: F,
+) -> HeimdallResult<T>
+where
+    F: std::future::Future<Output = HeimdallResult<T>>,
+{
+    // Check for user cancellation
+    if self.is_cancelled().await {
+        return Err(anyhow::anyhow!("Scan was cancelled"));
+    }
+
+    // Update status to running
+    self.db.update_scan_status(self.scan_id, status_running, None).await?;
+    self.sse.emit_stage_update(self.scan_id, stage_name, "running", None);
+
+    match future.await {
+        Ok(result) => {
+            self.db.update_scan_stage_status(scan_stage.id, "completed", None).await?;
+            Ok(result)
+        }
+        Err(e) => {
+            let err_msg = format!("{e:#}");
+            self.db.update_scan_stage_status(scan_stage.id, "failed", Some(&err_msg)).await?;
+            self.sse.emit_error(self.scan_id, &err_msg);
+            Err(e)
+        }
+    }
+}
+```
+
+<Info>
+  If a stage fails, the pipeline halts and marks the scan as `failed`. The error message is captured in both `scan_stages.error_message` and `scans.error_message`.
+</Info>
+
+## Cancellation Support
+
+Users can cancel running scans at any time:
+
+<CodeGroup>
+```bash cURL
+curl -X POST https://app.heimdall.security/api/v1/scans/{scan_id}/cancel \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+```typescript SDK
+await heimdall.scans.cancel(scanId);
+```
+</CodeGroup>
+
+The pipeline checks for cancellation before starting each stage:
+
+```rust src/pipeline/mod.rs
+async fn is_cancelled(&self) -> bool {
+    if let Ok(Some(scan)) = self.db.get_scan_by_id(self.scan_id).await {
+        scan.status == "cancelled"
+    } else {
+        false
+    }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Hunt Agent" icon="crosshairs" href="/features/hunt-agent">
+    Learn how the agentic discovery engine works
+  </Card>
+  <Card title="Threat Modeling" icon="shield" href="/features/threat-modeling">
+    Understand Tyr's STRIDE-based analysis
+  </Card>
+  <Card title="Sandbox Validation" icon="flask" href="/features/sandbox-validation">
+    See how Garmr validates exploitability
+  </Card>
+  <Card title="Findings Management" icon="list-check" href="/features/findings-management">
+    Manage and remediate vulnerabilities
+  </Card>
+</CardGroup>

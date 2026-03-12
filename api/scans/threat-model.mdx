@@ -1,0 +1,186 @@
+---
+title: "Get Threat Model"
+api: "GET /api/scans/{id}/threat-model"
+description: "Retrieve the AI-generated threat model for a scan"
+---
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier (UUID) of the scan
+</ParamField>
+
+## Response
+
+Returns a threat model object containing security boundaries, attack surfaces, and data flows:
+
+<ResponseField name="id" type="string">
+  Unique identifier (UUID) of the threat model
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  ID of the scan this threat model belongs to
+</ResponseField>
+
+<ResponseField name="repo_id" type="string">
+  ID of the repository
+</ResponseField>
+
+<ResponseField name="summary" type="string" optional>
+  High-level summary of the application's security posture
+</ResponseField>
+
+<ResponseField name="boundaries_json" type="object" optional>
+  Trust boundaries and security zones within the application
+  
+  <Expandable title="Boundaries Structure">
+    The boundaries object typically contains:
+    - **internal**: Components within the trusted boundary
+    - **external**: External systems and third-party integrations
+    - **user_facing**: User-facing interfaces and endpoints
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="surfaces_json" type="object" optional>
+  Attack surfaces and entry points
+  
+  <Expandable title="Surfaces Structure">
+    The surfaces object typically contains:
+    - **api_endpoints**: REST/GraphQL API endpoints
+    - **authentication**: Authentication mechanisms
+    - **file_uploads**: File upload handlers
+    - **database_queries**: Database interaction points
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="data_flows_json" type="object" optional>
+  Data flow diagrams showing how sensitive data moves through the system
+  
+  <Expandable title="Data Flows Structure">
+    The data flows object typically contains:
+    - **flows**: Array of data flow objects
+    - **sensitive_data**: Types of sensitive data handled
+    - **data_stores**: Where data is persisted
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="model_version" type="integer">
+  Version number of the threat modeling algorithm used
+</ResponseField>
+
+<ResponseField name="edited_by" type="string" optional>
+  User ID who last manually edited the threat model
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  ISO 8601 timestamp when the threat model was created
+</ResponseField>
+
+<ResponseField name="updated_at" type="string">
+  ISO 8601 timestamp when the threat model was last updated
+</ResponseField>
+
+<RequestExample>
+
+```bash cURL
+curl -X GET "https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/threat-model" \
+  -H "Authorization: Bearer YOUR_API_TOKEN"
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "success": true,
+  "data": {
+    "id": "8a9b0c1d-2e3f-4a5b-6c7d-8e9f0a1b2c3d",
+    "scan_id": "550e8400-e29b-41d4-a716-446655440000",
+    "repo_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "summary": "Web application with REST API, PostgreSQL database, and OAuth2 authentication. Critical attack surfaces include user authentication, file uploads, and database queries.",
+    "boundaries_json": {
+      "internal": [
+        "Database connection pool",
+        "Internal service mesh"
+      ],
+      "external": [
+        "OAuth2 providers (GitHub, Google)",
+        "S3 storage for file uploads",
+        "Email service (SendGrid)"
+      ],
+      "user_facing": [
+        "REST API endpoints",
+        "WebSocket connections"
+      ]
+    },
+    "surfaces_json": {
+      "api_endpoints": [
+        {
+          "path": "/api/auth/login",
+          "method": "POST",
+          "authentication": "none",
+          "risk": "high"
+        },
+        {
+          "path": "/api/files/upload",
+          "method": "POST",
+          "authentication": "required",
+          "risk": "medium"
+        }
+      ],
+      "authentication": [
+        "JWT tokens",
+        "OAuth2 integration",
+        "Session cookies"
+      ]
+    },
+    "data_flows_json": {
+      "flows": [
+        {
+          "source": "User input",
+          "destination": "Database",
+          "data_type": "Credentials",
+          "encryption": "in_transit",
+          "validation": "required"
+        }
+      ],
+      "sensitive_data": [
+        "Passwords (hashed)",
+        "API tokens",
+        "User PII"
+      ],
+      "data_stores": [
+        "PostgreSQL database (encrypted at rest)",
+        "S3 buckets (server-side encryption)"
+      ]
+    },
+    "model_version": 2,
+    "edited_by": null,
+    "created_at": "2026-03-12T10:02:15Z",
+    "updated_at": "2026-03-12T10:02:15Z"
+  }
+}
+```
+
+```json 404
+{
+  "success": false,
+  "error": {
+    "code": 404,
+    "message": "Threat model for scan '550e8400-e29b-41d4-a716-446655440000' not found"
+  }
+}
+```
+
+```json 500
+{
+  "success": false,
+  "error": {
+    "code": 500,
+    "message": "Failed to fetch threat model: database error"
+  }
+}
+```
+
+</ResponseExample>

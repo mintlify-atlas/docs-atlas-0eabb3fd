@@ -1,0 +1,86 @@
+---
+title: "Cancel Scan"
+api: "POST /api/scans/{id}/cancel"
+description: "Cancel a running scan"
+---
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier (UUID) of the scan to cancel
+</ParamField>
+
+## Behavior
+
+This endpoint cancels a scan that is currently in progress. The scan status will be updated to `cancelled` and any running analysis stages will be stopped.
+
+**Important Notes:**
+- Only scans with status other than `completed`, `failed`, or `cancelled` can be cancelled
+- The scan will be marked as cancelled immediately
+- SSE (Server-Sent Events) subscribers will receive status update events
+- The SSE channel for this scan will be cleaned up after a short delay (2 seconds)
+
+## Response
+
+Returns a simplified scan object with the updated status:
+
+<ResponseField name="id" type="string">
+  The scan ID that was cancelled
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  The new status of the scan (always `cancelled`)
+</ResponseField>
+
+<RequestExample>
+
+```bash cURL
+curl -X POST "https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/cancel" \
+  -H "Authorization: Bearer YOUR_API_TOKEN"
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "success": true,
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "cancelled"
+  }
+}
+```
+
+```json 404
+{
+  "success": false,
+  "error": {
+    "code": 404,
+    "message": "Scan '550e8400-e29b-41d4-a716-446655440000' not found"
+  }
+}
+```
+
+```json 409
+{
+  "success": false,
+  "error": {
+    "code": 409,
+    "message": "Scan is already completed"
+  }
+}
+```
+
+```json 500
+{
+  "success": false,
+  "error": {
+    "code": 500,
+    "message": "Failed to cancel scan: database error"
+  }
+}
+```
+
+</ResponseExample>

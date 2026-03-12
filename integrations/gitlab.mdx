@@ -1,0 +1,204 @@
+---
+title: GitLab Integration
+description: Connect repositories from GitLab.com or self-hosted GitLab instances
+---
+
+Heimdall supports both GitLab.com and self-hosted GitLab instances via OAuth 2.0.
+
+## OAuth App Setup
+
+Create a GitLab OAuth application to enable integration:
+
+### For GitLab.com
+
+1. Go to **GitLab Settings** → **Applications** → **Add new application**
+2. Fill in the details:
+   - **Name**: `Heimdall Security Scanner`
+   - **Redirect URI**: `http://localhost:8080/api/auth/gitlab/callback`
+   - **Scopes**: Select `read_user` and `read_repository`
+3. Click **Save application**
+4. Copy the **Application ID** and **Secret**
+
+### Environment Configuration
+
+Add to your `.env` file:
+
+```bash
+GITLAB_CLIENT_ID=your_application_id_here
+GITLAB_CLIENT_SECRET=your_secret_here
+GITLAB_REDIRECT_URI=http://localhost:8080/api/auth/gitlab/callback
+GITLAB_BASE_URL=https://gitlab.com
+```
+
+<Warning>
+For production, update `GITLAB_REDIRECT_URI` to your public domain (e.g., `https://heimdall.example.com/api/auth/gitlab/callback`).
+</Warning>
+
+## Self-Hosted GitLab Support
+
+Heimdall fully supports self-hosted GitLab instances (Community and Enterprise editions).
+
+### Configuration for Self-Hosted
+
+1. Create an OAuth application in your GitLab instance (same steps as above)
+
+2. Update `.env` with your GitLab instance URL:
+   ```bash
+   GITLAB_CLIENT_ID=your_application_id
+   GITLAB_CLIENT_SECRET=your_secret
+   GITLAB_REDIRECT_URI=http://localhost:8080/api/auth/gitlab/callback
+   GITLAB_BASE_URL=https://gitlab.yourcompany.com
+   ```
+
+<Info>
+The `GITLAB_BASE_URL` setting determines which GitLab instance Heimdall connects to. All OAuth and API requests use this base URL.
+</Info>
+
+### API Endpoints
+
+Heimdall uses the following GitLab API v4 endpoints:
+
+| Endpoint | Purpose |
+|----------|--------|
+| `/oauth/authorize` | OAuth authorization |
+| `/oauth/token` | Token exchange |
+| `/api/v4/user` | Fetch user profile |
+
+See [src/routes/auth.rs:1168-1172](~/workspace/source/src/routes/auth.rs) for the API integration.
+
+## Repository Connection
+
+### Authorization Flow
+
+1. Navigate to **Repositories** → **Connect Repository**
+2. Click **Connect with GitLab**
+3. Authorize Heimdall to access your repositories
+4. Select the repository to scan
+
+### OAuth Scopes
+
+Heimdall requests these GitLab scopes:
+
+| Scope | Purpose |
+|-------|--------|
+| `read_user` | Read user profile and email |
+| `read_repository` | Clone and read repository contents |
+
+### Token Refresh
+
+GitLab OAuth tokens expire after a configured period (default: 2 hours). Heimdall stores both:
+
+- **Access token**: Used for API requests (encrypted at rest)
+- **Refresh token**: Used to obtain new access tokens when expired
+
+Tokens are automatically refreshed when needed. See [src/routes/auth.rs:1232-1240](~/workspace/source/src/routes/auth.rs) for the refresh logic.
+
+## Webhook Configuration
+
+Automatically trigger scans on GitLab push events.
+
+### Setting Up Webhooks
+
+1. Generate a webhook secret:
+   ```bash
+   openssl rand -hex 20
+   ```
+
+2. Add to your `.env`:
+   ```bash
+   WEBHOOK_SECRET=your_generated_secret_here
+   ```
+
+3. In your GitLab project, go to **Settings** → **Webhooks**
+
+4. Configure the webhook:
+   - **URL**: `https://heimdall.example.com/webhooks/gitlab`
+   - **Secret token**: The same value as `WEBHOOK_SECRET`
+   - **Trigger**: Check **Push events**
+   - **SSL verification**: Enable SSL verification (recommended)
+
+5. Click **Add webhook**
+
+### Signature Verification
+
+GitLab uses simple token-based verification:
+
+- GitLab sends the secret in the `X-Gitlab-Token` header
+- Heimdall compares it against `WEBHOOK_SECRET` (exact string match)
+- Mismatched tokens return `401 Unauthorized`
+
+See [src/routes/webhooks.rs:156-165](~/workspace/source/src/routes/webhooks.rs) for the verification implementation.
+
+<Note>
+Unlike GitHub's HMAC-SHA256 signature, GitLab uses direct string comparison. Ensure your `WEBHOOK_SECRET` is long and random.
+</Note>
+
+### Supported Events
+
+| Event | Description | Action |
+|-------|-------------|--------|
+| Push events | Code pushed to a branch | Triggers full scan at the pushed commit SHA |
+
+Other event types (merge requests, issues, etc.) are accepted but ignored with a `200 OK` response.
+
+### Testing Webhooks
+
+GitLab provides a "Test" button in the webhook settings:
+
+1. Go to **Settings** → **Webhooks**
+2. Find your webhook and click **Test** → **Push events**
+3. Check the response in GitLab (should show `200 OK`)
+4. Verify in Heimdall logs:
+   ```bash
+   docker compose logs -f heimdall | grep -i gitlab
+   ```
+
+## Troubleshooting
+
+### OAuth Connection Fails with Self-Hosted GitLab
+
+**Symptom**: Authorization redirects to GitLab.com instead of your instance
+
+**Solutions**:
+- Verify `GITLAB_BASE_URL` is set correctly (no trailing slash)
+- Restart Heimdall after changing `.env`
+- Check that the redirect URI in GitLab settings matches exactly
+
+### Token Expired Errors
+
+**Symptom**: "401 Unauthorized" when cloning repositories
+
+**Solutions**:
+- Check token expiration in `oauth_connections` table
+- Re-authorize the connection through the UI
+- Verify refresh token is stored and valid
+
+### Webhook Shows "Account in Use" Error
+
+**Symptom**: Webhook delivers successfully but logs show "gitlab-account-in-use"
+
+**Solutions**:
+- This happens when the GitLab account is already linked to a different Heimdall user
+- Disconnect the GitLab connection from the other account via Settings
+- Re-connect from the intended account
+
+See [src/routes/auth.rs:1204-1217](~/workspace/source/src/routes/auth.rs) for account conflict handling.
+
+### Self-Hosted GitLab Certificate Errors
+
+**Symptom**: "SSL certificate verification failed"
+
+**Solutions**:
+- Ensure your self-hosted GitLab has a valid SSL certificate
+- For development with self-signed certs, you may need to configure Rust's TLS client (not recommended for production)
+- Use a reverse proxy with a trusted certificate
+
+## API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/auth/gitlab/authorize` | `GET` | Initiate GitLab OAuth flow |
+| `/api/auth/gitlab/callback` | `GET` | OAuth callback (called by GitLab) |
+| `/webhooks/gitlab` | `POST` | GitLab webhook receiver (public) |
+
+See [API Reference](/api/authentication/oauth) for complete documentation.

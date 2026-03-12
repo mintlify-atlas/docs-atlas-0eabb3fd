@@ -1,0 +1,141 @@
+---
+title: 'Register'
+api: 'POST /api/auth/register'
+description: 'Create a new user account and receive a session token'
+---
+
+## Description
+
+Creates a new user account with email and password credentials. Returns a session token that can be used for subsequent authenticated requests. The session token is also set as an HTTP-only cookie.
+
+## Request Body
+
+<ParamField body="email" type="string" required>
+  User's email address. Must be a valid email format.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  User's password. Must be at least 8 characters long.
+</ParamField>
+
+<ParamField body="display_name" type="string">
+  Optional display name for the user.
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates whether the request was successful.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="properties">
+    <ResponseField name="token" type="string">
+      Session token for authentication. Valid for 7 days.
+    </ResponseField>
+
+    <ResponseField name="user" type="object">
+      <Expandable title="properties">
+        <ResponseField name="id" type="string">
+          User's unique UUID.
+        </ResponseField>
+
+        <ResponseField name="email" type="string">
+          User's email address.
+        </ResponseField>
+
+        <ResponseField name="display_name" type="string | null">
+          User's display name.
+        </ResponseField>
+
+        <ResponseField name="role" type="string">
+          User's role (e.g., "user", "admin").
+        </ResponseField>
+
+        <ResponseField name="created_at" type="string">
+          Timestamp when the user was created (ISO 8601 format).
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example Request
+
+```bash
+curl -X POST https://api.heimdall.example/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "securepassword123",
+    "display_name": "John Doe"
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "token": "7a3f9c2e1b5d8a4c6e9f2b3a7c1d5e8f9a2b4c6d8e1f3a5b7c9d2e4f6a8b1c3d5e7f9",
+    "user": {
+      "id": "123e4567-e89b-12d3-a456-426614174000",
+      "email": "user@example.com",
+      "display_name": "John Doe",
+      "role": "user",
+      "created_at": "2026-03-12T10:30:00Z"
+    }
+  }
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="object">
+  <Expandable title="properties">
+    <ResponseField name="code" type="number">
+      HTTP status code.
+    </ResponseField>
+
+    <ResponseField name="message" type="string">
+      Error description.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Validation Error (400)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 400,
+    "message": "Validation failed: email: Invalid email address"
+  }
+}
+```
+
+### Email Already Exists (409)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 409,
+    "message": "A user with this email already exists"
+  }
+}
+```
+
+### Internal Server Error (500)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 500,
+    "message": "Internal server error"
+  }
+}
+```

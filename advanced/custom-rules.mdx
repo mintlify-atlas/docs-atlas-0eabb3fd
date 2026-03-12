@@ -1,0 +1,396 @@
+---
+title: Custom Static Analysis Rules
+description: Add your own pattern-based vulnerability detection rules to Heimdall's static analysis engine
+---
+
+Heimdall's static analysis stage uses regex-based rules to detect common security vulnerabilities before the AI agent runs. You can extend this with custom rules tailored to your codebase.
+
+## How Static Analysis Rules Work
+
+Static analysis in Heimdall (`src/pipeline/static_analysis/mod.rs`) runs deterministic pattern matching across your codebase:
+
+1. **Pattern matching**: Each rule is a compiled regex that scans source files line-by-line
+2. **Language filtering**: Rules can target specific languages (e.g., Python-only, JavaScript-only)
+3. **Finding creation**: Matches create findings with severity, CWE classification, and code snippets
+4. **Deduplication**: Each finding gets a unique fingerprint (SHA-256 hash of rule name + file path + line number)
+
+### Rule Execution Flow
+
+```mermaid
+graph LR
+    A[Load Rules] --> B[For Each File]
+    B --> C{Language Match?}
+    C -->|Yes| D[Scan Lines]
+    C -->|No| B
+    D --> E{Pattern Match?}
+    E -->|Yes| F[Create Finding]
+    E -->|No| D
+    F --> G[Store in Database]
+```
+
+## Rule Format and Structure
+
+Rules are defined as a const array in `src/pipeline/static_analysis/mod.rs`:
+
+```rust
+struct Rule {
+    name: &'static str,           // Unique identifier
+    pattern: &'static str,        // Regex pattern
+    severity: &'static str,       // critical | high | medium | low
+    cwe: &'static str,            // CWE-XXX identifier
+    description: &'static str,    // Human-readable explanation
+    languages: &'static [&'static str], // Empty = all languages
+}
+```
+
+### Field Descriptions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `&str` | Yes | Unique rule identifier (kebab-case) |
+| `pattern` | `&str` | Yes | Rust regex pattern (supports full regex syntax) |
+| `severity` | `&str` | Yes | One of: `critical`, `high`, `medium`, `low` |
+| `cwe` | `&str` | Yes | CWE identifier (e.g., `CWE-89` for SQL injection) |
+| `description` | `&str` | Yes | Short explanation shown to users |
+| `languages` | `&[&str]` | Yes | Language filter; empty array = all files |
+
+## Adding Custom Rules
+
+### Step 1: Define Your Rule
+
+Add a new entry to the `RULES` array in `src/pipeline/static_analysis/mod.rs`:
+
+```rust
+const RULES: &[Rule] = &[
+    // ... existing rules ...
+    
+    // Your custom rule:
+    Rule {
+        name: "custom-unsafe-eval",
+        pattern: r#"(?i)eval\s*\("#,
+        severity: "high",
+        cwe: "CWE-95",
+        description: "Use of eval() allows arbitrary code execution",
+        languages: &["javascript", "typescript", "python"],
+    },
+];
+```
+
+### Step 2: Test the Pattern
+
+Verify your regex matches the code you want to detect:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use regex::Regex;
+
+    #[test]
+    fn test_custom_unsafe_eval() {
+        let rule = RULES.iter()
+            .find(|r| r.name == "custom-unsafe-eval")
+            .unwrap();
+        let re = Regex::new(rule.pattern).unwrap();
+        
+        // Positive case: should match
+        assert!(re.is_match("result = eval(user_input)"));
+        
+        // Negative case: should not match
+        assert!(!re.is_match("result = evaluate_expression()"));
+    }
+}
+```
+
+Run your test:
+
+```bash
+cargo test --lib pipeline::static_analysis::test_custom_unsafe_eval
+```
+
+### Step 3: Rebuild and Run
+
+```bash
+cargo build --release
+cargo run --bin heimdall
+```
+
+Your rule now runs on every scan.
+
+## Example Rules
+
+### SQL Injection Detection
+
+```rust
+Rule {
+    name: "sql-injection-string-concat",
+    pattern: r#"(?i)(?:execute|query|raw)\s*\(.*(?:format!|%s|\+\s*\w+|\$\{)"#,
+    severity: "high",
+    cwe: "CWE-89",
+    description: "Potential SQL injection via string concatenation/interpolation",
+    languages: &["rust", "python", "javascript", "typescript", "go", "java"],
+}
+```
+
+**Matches:**
+```python
+query(f"SELECT * FROM users WHERE id = {user_id}")
+cursor.execute("SELECT * FROM orders WHERE status = " + status)
+```
+
+**Does not match:**
+```python
+query("SELECT * FROM users WHERE id = ?", [user_id])  # Parameterized
+```
+
+### Hardcoded Secrets
+
+```rust
+Rule {
+    name: "hardcoded-api-key",
+    pattern: r#"(?i)(?:api_?key|secret_?key|password|token)\s*[:=]\s*["'][A-Za-z0-9+/=_-]{16,}["']"#,
+    severity: "high",
+    cwe: "CWE-798",
+    description: "Potential hardcoded secret or API key",
+    languages: &[],  // All languages
+}
+```
+
+**Matches:**
+```typescript
+const API_KEY = "sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+let password = "MySecretPassword123";
+```
+
+### Command Injection
+
+```rust
+Rule {
+    name: "command-injection",
+    pattern: r#"(?i)(?:system|exec|popen|subprocess\.(?:call|run|Popen)|child_process\.exec)\s*\(.*(?:format!|\+\s*\w+|\$\{|%s)"#,
+    severity: "critical",
+    cwe: "CWE-78",
+    description: "Potential command injection via string interpolation in shell command",
+    languages: &["rust", "python", "javascript", "typescript", "go", "java"],
+}
+```
+
+**Matches:**
+```javascript
+child_process.exec(`ls ${userInput}`);
+subprocess.call("rm " + filename, shell=True);
+```
+
+### XSS via innerHTML
+
+```rust
+Rule {
+    name: "xss-innerhtml",
+    pattern: r#"\.innerHTML\s*=",
+    severity: "medium",
+    cwe: "CWE-79",
+    description: "Potential XSS via innerHTML assignment",
+    languages: &["javascript", "typescript"],
+}
+```
+
+**Matches:**
+```javascript
+element.innerHTML = userInput;
+document.body.innerHTML = htmlContent;
+```
+
+## Advanced Patterns
+
+### Multiline Matching
+
+Rust regex doesn't match across newlines by default. Use `(?m)` for multiline mode:
+
+```rust
+Rule {
+    name: "toctou-race",
+    pattern: r#"(?i)(?:os\.path\.exists|File\.exists|access)\s*\([^)]+\).*\n.*(?:open|read|write|unlink|remove)\s*\("#,
+    severity: "medium",
+    cwe: "CWE-367",
+    description: "Time-of-check to time-of-use (TOCTOU) race condition on file operation",
+    languages: &["python", "java", "c", "cpp"],
+}
+```
+
+**Matches:**
+```python
+if os.path.exists(filename):
+    with open(filename) as f:  # Race window here
+        data = f.read()
+```
+
+### Case-Insensitive Matching
+
+Use `(?i)` flag:
+
+```rust
+pattern: r#"(?i)eval\s*\("#  // Matches eval, Eval, EVAL
+```
+
+### Negative Lookahead
+
+Exclude false positives:
+
+```rust
+// Match eval() but NOT safe_eval()
+pattern: r#"(?<!safe_)eval\s*\("#
+```
+
+## Testing Rules
+
+### Unit Test Template
+
+```rust
+#[test]
+fn test_my_custom_rule() {
+    let rule = RULES.iter()
+        .find(|r| r.name == "my-custom-rule")
+        .unwrap();
+    let re = Regex::new(rule.pattern).unwrap();
+    
+    // True positives
+    assert!(re.is_match("dangerous_code_here"));
+    
+    // False positives (should NOT match)
+    assert!(!re.is_match("safe_code_here"));
+}
+```
+
+### Test All Rules Compile
+
+Heimdall includes a test to ensure all patterns are valid regex:
+
+```rust
+#[test]
+fn test_all_rule_patterns_compile() {
+    for rule in RULES {
+        let result = Regex::new(rule.pattern);
+        assert!(
+            result.is_ok(),
+            "Rule '{}' has invalid regex pattern: {}",
+            rule.name,
+            rule.pattern,
+        );
+    }
+}
+```
+
+Run all static analysis tests:
+
+```bash
+cargo test --lib pipeline::static_analysis
+```
+
+## Rule Performance
+
+### Catastrophic Backtracking
+
+Avoid regex patterns that can cause exponential time complexity (ReDoS):
+
+**Bad:**
+```rust
+pattern: r#"(.*)*"#  // Catastrophic backtracking
+```
+
+**Good:**
+```rust
+pattern: r#".*"#     // Linear time
+```
+
+### Benchmarking
+
+For large codebases, test rule performance:
+
+```rust
+#[test]
+fn benchmark_rule_performance() {
+    let rule = RULES.iter()
+        .find(|r| r.name == "sql-injection-string-concat")
+        .unwrap();
+    let re = Regex::new(rule.pattern).unwrap();
+    let large_file = "...".repeat(10_000);
+    
+    let start = std::time::Instant::now();
+    for line in large_file.lines() {
+        re.is_match(line);
+    }
+    let elapsed = start.elapsed();
+    
+    assert!(elapsed.as_millis() < 100, "Rule too slow: {:?}", elapsed);
+}
+```
+
+## Severity Guidelines
+
+| Severity | Use When | Examples |
+|----------|----------|----------|
+| **Critical** | Remote code execution, authentication bypass | Command injection, hardcoded admin credentials |
+| **High** | Data exposure, SQL injection | Unparameterized queries, secrets in code |
+| **Medium** | XSS, CSRF, weak crypto | innerHTML assignment, MD5 usage |
+| **Low** | Information disclosure, debug mode | Stack traces in responses, verbose errors |
+
+## CWE Reference
+
+Common CWEs for rule classification:
+
+- **CWE-78**: Command Injection
+- **CWE-79**: Cross-site Scripting (XSS)
+- **CWE-89**: SQL Injection
+- **CWE-798**: Hardcoded Credentials
+- **CWE-327**: Weak Crypto Algorithm
+- **CWE-502**: Deserialization of Untrusted Data
+- **CWE-918**: Server-Side Request Forgery (SSRF)
+
+Full list: [CWE Top 25](https://cwe.mitre.org/top25/)
+
+## Integration with Semgrep
+
+For more complex rules, Heimdall also integrates with [Semgrep](https://semgrep.dev):
+
+```bash
+# Install semgrep
+pip install semgrep
+
+# Heimdall automatically runs it if available
+cargo run --bin heimdall
+```
+
+Semgrep findings are deduplicated against built-in rules and stored with `source = "static"`.
+
+## Rule Deduplication
+
+Each finding gets a unique fingerprint:
+
+```rust
+fn make_fingerprint(rule: &str, file: &str, line: i32) -> String {
+    let input = format!("{rule}:{file}:{line}");
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    hex::encode(hasher.finalize())
+}
+```
+
+If the same rule matches the same file/line in a later scan, the fingerprint matches and no duplicate finding is created.
+
+## Best Practices
+
+1. **Start with high severity**: Only add rules for real vulnerabilities, not code style issues
+2. **Test on real code**: Run against your actual codebase to tune false positive rate
+3. **Document exceptions**: Use comments to explain why a pattern is safe:
+   ```python
+   # nosec: eval() is safe here because input is validated
+   result = eval(expression)
+   ```
+4. **Use language filters**: Avoid scanning irrelevant files (e.g., Python rules on JavaScript)
+5. **Keep patterns simple**: Complex regex is hard to maintain and can be slow
+
+## Related Files
+
+- `src/pipeline/static_analysis/mod.rs` — Core static analysis engine and rule definitions
+- `src/pipeline/static_analysis/semgrep.rs` — Semgrep integration
+- `src/pipeline/hunt/mod.rs` — AI-powered Hunt agent (runs after static analysis)

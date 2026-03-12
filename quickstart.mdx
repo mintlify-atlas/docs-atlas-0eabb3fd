@@ -1,80 +1,321 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get Heimdall running and perform your first security scan in minutes
 ---
 
-## Get started in three steps
+Get Heimdall up and running in under 5 minutes. This guide covers the fastest path to running your first security scan.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- **Rust 1.85+** (2024 edition)
+- **PostgreSQL 14+** or Docker
+- **Git 2.25+**
+- **AI API Key** — At least one of:
+  - Anthropic API key (Claude) - recommended
+  - OpenAI API key (GPT-4o)
+  - Ollama server URL (for local models)
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+Docker is optional but recommended for easier PostgreSQL setup and for enabling the Garmr sandbox (PoC validation).
+</Note>
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/modestnerd/heimdall.git
+    cd heimdall
+    ```
+  </Step>
+
+  <Step title="Start PostgreSQL">
+    <CodeGroup>
+    ```bash Docker (Recommended)
+    docker compose -f docker-compose.dev.yml up -d
+    ```
+
+    ```bash Local PostgreSQL
+    # macOS
+    brew install postgresql@17
+    brew services start postgresql@17
+    createdb heimdall
+
+    # Ubuntu/Debian
+    sudo apt install postgresql postgresql-contrib
+    sudo systemctl start postgresql
+    sudo -u postgres createdb heimdall
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Configure environment">
+    Copy the example environment file and add your AI provider key:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Edit `.env` and set at least one AI provider:
+
+    ```bash .env
+    # Required: Database connection
+    DATABASE_URL=postgres://heimdall:heimdall@localhost:5432/heimdall
+
+    # Required: At least one AI provider (BYOK)
+    ANTHROPIC_API_KEY=sk-ant-...          # Claude (recommended)
+    # OPENAI_API_KEY=sk-...               # GPT-4o
+    # OLLAMA_URL=http://localhost:11434    # Local models
+
+    # Recommended: Generate security keys
+    ENCRYPTION_KEY=$(openssl rand -hex 32)
+    WEBHOOK_SECRET=$(openssl rand -hex 20)
+    ```
+
+    <Warning>
+    Generate unique values for `ENCRYPTION_KEY` and `WEBHOOK_SECRET` using the commands shown above. These are critical for securing stored API keys and webhook verification.
+    </Warning>
+  </Step>
+
+  <Step title="Run Heimdall">
+    The schema is applied automatically on startup:
+
+    ```bash
+    cargo run --bin heimdall
+    ```
+
+    Wait for the server to start. You should see:
+
+    ```
+    [INFO] Starting Heimdall on http://0.0.0.0:8080
+    [INFO] Database schema applied successfully
+    [INFO] Worker enabled, polling every 5 seconds
+    ```
+  </Step>
+
+  <Step title="Verify installation">
+    Open your browser to `http://localhost:8080` or check the health endpoint:
+
+    ```bash
+    curl http://localhost:8080/health
+    # {"status":"ok"}
+    ```
+  </Step>
+</Steps>
+
+## Your First Scan
+
+<Steps>
+  <Step title="Register an account">
+    1. Navigate to `http://localhost:8080`
+    2. Click **Sign Up**
+    3. Enter your email and password
+    4. Click **Register**
+
+    You'll be automatically logged in after registration.
+  </Step>
+
+  <Step title="Add a repository">
+    Heimdall supports multiple ways to connect repositories:
+
+    <CodeGroup>
+    ```text GitHub OAuth
+    1. Click "Connect Repository" → "GitHub"
+    2. Authorize the OAuth app
+    3. Select a repository from your account
+    ```
+
+    ```text GitLab OAuth
+    1. Click "Connect Repository" → "GitLab"
+    2. Authorize the OAuth app
+    3. Select a repository from your account
+    ```
+
+    ```text Public Git URL
+    1. Click "Connect Repository" → "Git URL"
+    2. Enter: https://github.com/user/repo.git
+    3. Click "Add Repository"
+    ```
+
+    ```text Zip Upload
+    1. Click "Connect Repository" → "Upload ZIP"
+    2. Select your project ZIP file
+    3. Click "Upload"
+    ```
+    </CodeGroup>
+
+    <Note>
+    GitHub and GitLab OAuth require setting up OAuth apps and configuring `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` or `GITLAB_CLIENT_ID`/`GITLAB_CLIENT_SECRET` in your `.env` file.
+    </Note>
+  </Step>
+
+  <Step title="Trigger a scan">
+    1. From your repositories list, click on the repository you just added
+    2. Click **Run Scan**
+    3. Confirm by clicking **Start Scan**
+
+    The scan will enter a queue and begin processing immediately if a worker is available.
+  </Step>
+
+  <Step title="Monitor progress">
+    Heimdall provides real-time scan progress via Server-Sent Events (SSE):
+
+    - **Ingest** — Cloning repository and building code index (AST, symbols, call graph)
+    - **Tyr** — Generating threat model (boundaries, attack surfaces, data flows)
+    - **Static Analysis** — Pattern matching, secret detection, dependency audit
+    - **Hunt** — AI agent investigating security vulnerabilities per threat
+    - **Víðarr** — Adversarial verification to filter false positives
+    - **Garmr** — Sandbox validation of proof-of-concept exploits
+    - **Report** — Ranking findings and generating patches
+
+    <Note>
+    A typical scan takes 2-5 minutes depending on repository size and number of threats discovered.
+    </Note>
+  </Step>
+
+  <Step title="Review findings">
+    Once the scan completes, you'll see:
+
+    - **Severity-ranked findings** — Critical, High, Medium, Low
+    - **File locations** with line numbers and code context
+    - **Plain English explanations** of each vulnerability
+    - **Suggested patches** as unified diffs
+    - **PoC exploit details** (if sandbox-validated)
+    - **Source badges** — AI (Hunt agent), Static (pattern rules), Dependencies (audit)
+
+    Click on any finding to view:
+    - Full vulnerability details
+    - CWE/CVE classification
+    - Confidence level (High for static rules, Confirmed for sandbox-validated)
+    - Code snippets showing the vulnerable code
+    - Step-by-step remediation guidance
+  </Step>
+</Steps>
+
+## Understanding Results
+
+### Severity Levels
+
+| Severity | Description | Examples |
+|----------|-------------|----------|
+| **Critical** | Exploitable remotely with severe impact | SQL injection, RCE, authentication bypass |
+| **High** | Significant security impact | XSS, CSRF, hardcoded credentials |
+| **Medium** | Moderate risk or limited exploitability | Information disclosure, weak crypto |
+| **Low** | Best practice violations | Missing security headers, verbose errors |
+
+### Finding Sources
+
+- **AI** — Discovered by the Hunt agent through code reasoning
+- **Static** — Pattern-matched by deterministic rules
+- **Dependencies** — Vulnerable dependencies from audit
+
+### Confidence Levels
+
+- **High** — Static analysis rules (deterministic)
+- **Medium** — AI-discovered (requires validation)
+- **Confirmed** — Sandbox-validated with PoC exploit
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure AI providers, OAuth, security settings, and workers
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Learn about local development setup and Docker deployment
+  </Card>
+  <Card title="Scan Pipeline" icon="diagram-project" href="/features/scan-pipeline">
+    Deep dive into the 7-stage scan pipeline
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/authentication/register">
+    Integrate Heimdall into your CI/CD pipeline
+  </Card>
+</CardGroup>
+
+## Docker Quick Start
+
+Prefer Docker? Here's the fastest path:
+
+<Steps>
+  <Step title="Configure environment">
+    ```bash
+    cp .env.example .env
+    # Edit .env with your AI provider key(s)
+    ```
+  </Step>
+
+  <Step title="Start Heimdall + PostgreSQL">
+    ```bash
+    docker compose --profile postgres up -d
+    ```
+  </Step>
+
+  <Step title="Verify it's running">
+    ```bash
+    curl http://localhost:8080/health
+    # {"status":"ok"}
+    ```
+
+    Open `http://localhost:8080` in your browser.
+  </Step>
+</Steps>
+
+<Warning>
+The Docker container requires access to `/var/run/docker.sock` for the Garmr sandbox. This is mounted automatically in the docker-compose.yml.
+</Warning>
+
+## Troubleshooting
+
+### Database Connection Failed
+
+If you see `DATABASE_URL connection failed`:
+
+1. Verify PostgreSQL is running:
+   ```bash
+   docker compose -f docker-compose.dev.yml ps
+   # OR
+   brew services list | grep postgresql
+   ```
+
+2. Check your `DATABASE_URL` in `.env` matches your database credentials
+
+3. Test the connection:
+   ```bash
+   psql postgres://heimdall:heimdall@localhost:5432/heimdall -c "SELECT 1"
+   ```
+
+### No AI Provider Configured
+
+If you see `No AI provider configured`:
+
+1. Ensure at least one of these is set in `.env`:
+   - `ANTHROPIC_API_KEY`
+   - `OPENAI_API_KEY`
+   - `OLLAMA_URL`
+
+2. Restart Heimdall after editing `.env`
+
+### Scan Stuck or Failed
+
+If a scan gets stuck:
+
+1. Check the logs for errors:
+   ```bash
+   RUST_LOG=debug cargo run --bin heimdall
+   ```
+
+2. Verify Docker is running (required for Garmr sandbox):
+   ```bash
+   docker info
+   ```
+
+3. Cancel the scan and retry:
+   ```bash
+   curl -X POST http://localhost:8080/api/scans/{scan_id}/cancel
+   ```
+
+<Note>
+Stale scans are automatically timed out after 10 minutes by default. Configure this with `WORKER_STALE_TIMEOUT_MINS` in `.env`.
 </Note>

@@ -1,0 +1,559 @@
+---
+title: 'Sandbox Validation'
+description: 'How Garmr validates vulnerabilities with proof-of-concept exploits in isolated containers'
+icon: 'flask'
+---
+
+Garmr is Heimdall's sandbox validation engine, named after the watchdog of Hel in Norse mythology. It takes findings from the Hunt stage and **proves exploitability** by generating and executing proof-of-concept (PoC) scripts in isolated Docker containers.
+
+<Info>
+  Garmr transforms **potential vulnerabilities** into **confirmed exploits**, dramatically reducing false positives and giving you confidence in remediation priorities.
+</Info>
+
+## Why Sandbox Validation?
+
+Static analysis and AI agents can identify suspicious code patterns, but they can't always prove a vulnerability is exploitable in the real deployment context. Garmr bridges this gap:
+
+<CardGroup cols={2}>
+  <Card title="Proof of Concept" icon="vial">
+    Generate exploit scripts that demonstrate the vulnerability
+  </Card>
+  <Card title="Safe Execution" icon="shield-check">
+    Run exploits in isolated containers with network disabled
+  </Card>
+  <Card title="Automated Analysis" icon="brain">
+    AI interprets execution results to confirm exploitability
+  </Card>
+  <Card title="Risk Confidence" icon="award">
+    Upgrade finding confidence from "medium" to "validated"
+  </Card>
+</CardGroup>
+
+## How Garmr Works
+
+<Steps>
+  <Step title="Finding Selection">
+    Garmr receives all findings from the Hunt stage
+  </Step>
+  <Step title="PoC Generation">
+    For each finding, an LLM generates a minimal exploit script
+  </Step>
+  <Step title="Container Execution">
+    The script runs in an isolated Docker container with the repo mounted read-only
+  </Step>
+  <Step title="Result Analysis">
+    Another LLM analyzes stdout/stderr to determine if exploitation succeeded
+  </Step>
+  <Step title="Database Update">
+    Confirmed findings get `poc_validated = true` and full exploit details stored
+  </Step>
+</Steps>
+
+## Architecture
+
+Garmr is implemented in `src/pipeline/garmr/mod.rs`:
+
+```rust
+pub struct GarmrStage {
+    pub scan_id: uuid::Uuid,
+    pub config: SandboxConfig,
+    pub db: Arc<DatabaseOperations>,
+    pub ai: Arc<dyn ModelProvider>,
+    pub default_model: String,
+}
+
+pub struct SandboxConfig {
+    pub network_enabled: bool,        // Default: false
+    pub cpu_limit: u32,               // Default: 1 core
+    pub memory_limit_bytes: u64,      // Default: 512 MB
+    pub timeout_seconds: u64,         // Default: 30 seconds
+}
+```
+
+<Warning>
+  Garmr requires **Docker** to be available on the scan host. If Docker is not installed or accessible, the stage is skipped gracefully.
+</Warning>
+
+## Container Constraints
+
+Every sandbox container is heavily restricted for safety:
+
+### Network Isolation
+
+```rust src/pipeline/garmr/mod.rs
+let host_config = bollard::models::HostConfig {
+    network_mode: Some("none".to_string()), // No network access
+    // ...
+};
+```
+
+<Info>
+  Exploits **cannot** make external requests, download payloads, or exfiltrate data. This prevents supply chain attacks from PoC scripts.
+</Info>
+
+### Resource Limits
+
+```rust src/pipeline/garmr/mod.rs
+let host_config = bollard::models::HostConfig {
+    nano_cpus: Some(1_000_000_000),          // 1 CPU core
+    memory: Some(512 * 1024 * 1024),         // 512 MB RAM
+    // ...
+};
+```
+
+This prevents:
+- **CPU exhaustion:** Infinite loops or crypto mining
+- **Memory bombs:** Allocating gigabytes of RAM
+- **Fork bombs:** Spawning processes recursively
+
+### Read-Only Mount
+
+The target repository is mounted **read-only**:
+
+```rust src/pipeline/garmr/mod.rs
+let repo_path = repo_work_dir.to_string_lossy().to_string();
+let binds = vec![format!("{repo_path}:/repo:ro")]; // :ro = read-only
+```
+
+Exploits can read source files to analyze vulnerabilities but **cannot modify** the repo.
+
+### Unprivileged User
+
+```rust src/pipeline/garmr/mod.rs
+let config = ContainerConfig {
+    user: Some("nobody".to_string()), // Non-root user
+    // ...
+};
+```
+
+Even if an exploit achieves code execution, it runs as `nobody` with no privileges.
+
+### Timeout Enforcement
+
+```rust src/pipeline/garmr/mod.rs
+let wait_result = tokio::time::timeout(
+    Duration::from_secs(self.config.timeout_seconds),
+    async {
+        let mut stream = docker.wait_container(&container_name, None);
+        stream.next().await
+    }
+).await;
+
+match wait_result {
+    Err(_) => {
+        // Timeout — kill the container
+        let _ = docker.kill_container::<String>(&container_name, None).await;
+        -1
+    }
+    // ...
+}
+```
+
+Containers that exceed 30 seconds are forcefully terminated.
+
+## PoC Execution Flow
+
+### Step 1: Generate PoC Script
+
+Garmr sends the finding details to an LLM:
+
+```rust src/pipeline/garmr/mod.rs
+let request = CompletionRequest {
+    model: self.default_model.clone(),
+    messages: vec![
+        Message {
+            role: "system".to_string(),
+            content: "You are a security researcher generating proof-of-concept exploit scripts. \
+                      Generate minimal, safe PoC scripts that demonstrate vulnerabilities. \
+                      The script will run in a sandboxed Docker container with the repo mounted read-only at /repo. \
+                      Output ONLY a JSON object: {\"language\": \"python|bash|node\", \"script\": \"...\"}."
+                .to_string(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: format!(
+                "Generate a PoC script for this vulnerability:\n\
+                 Title: {}\n\
+                 Severity: {}\n\
+                 File: {}:{}\n\
+                 Description: {}\n\
+                 Code snippet:\n{}\n\
+                 \n\
+                 The repo is mounted at /repo. Generate a script that demonstrates \
+                 the vulnerability exists. Use exit code 0 for success (vulnerability confirmed) \
+                 and non-zero for failure.",
+                finding.title,
+                finding.severity,
+                finding.file_path,
+                finding.line_start,
+                finding.description.as_deref().unwrap_or("N/A"),
+                finding.code_snippet.as_deref().unwrap_or("N/A"),
+            ),
+        },
+    ],
+    temperature: Some(0.2), // Low temperature for reliability
+    // ...
+};
+```
+
+**Example Generated PoC:**
+
+<CodeGroup>
+```python SQL Injection
+# PoC for SQL injection in user search
+import sys
+
+# Read the vulnerable source file
+with open('/repo/src/api/search.rs', 'r') as f:
+    source = f.read()
+
+# Check if the query construction is vulnerable
+if 'format!("SELECT' in source and 'WHERE username LIKE' in source:
+    # Pattern indicates string interpolation in SQL
+    if '$1' not in source and 'bind(' not in source:
+        # No parameterization detected
+        print("CONFIRMED: SQL injection vulnerability detected")
+        print("Evidence: Query uses format! without parameterization")
+        sys.exit(0)  # Success = vulnerability confirmed
+    else:
+        print("False positive: Query is parameterized")
+        sys.exit(1)
+else:
+    print("Could not locate vulnerable pattern")
+    sys.exit(1)
+```
+
+```bash Path Traversal
+#!/bin/bash
+# PoC for path traversal in file upload
+
+# Check if path validation exists
+if grep -q "canonicalize" /repo/src/api/files.rs; then
+    echo "Path traversal mitigated by canonicalize()"
+    exit 1
+fi
+
+# Check for dangerous path patterns
+if grep -E '\.\./' /repo/src/api/files.rs | grep -v "//" > /dev/null; then
+    echo "CONFIRMED: Path traversal vulnerability"
+    echo "Evidence: '../' patterns used without sanitization"
+    exit 0
+else
+    echo "No evidence of path traversal"
+    exit 1
+fi
+```
+
+```javascript SSRF Validation
+// PoC for SSRF in webhook URL validation
+const fs = require('fs');
+
+const source = fs.readFileSync('/repo/src/webhooks/register.js', 'utf8');
+
+// Check if URL validation allows localhost/internal IPs
+if (source.includes('new URL(') && !source.includes('isPrivateIP')) {
+    // URL parsing without private IP filtering
+    if (!source.includes('127.0.0.1') && !source.includes('localhost')) {
+        console.log('CONFIRMED: SSRF vulnerability');
+        console.log('Evidence: URL validation lacks private IP filtering');
+        process.exit(0); // Vulnerability confirmed
+    }
+}
+
+console.log('Could not confirm SSRF vulnerability');
+process.exit(1);
+```
+</CodeGroup>
+
+<Note>
+  PoC scripts are **static analysis proofs**, not live exploits. They read source code to verify vulnerability patterns exist without requiring a running application.
+</Note>
+
+### Step 2: Execute in Container
+
+Garmr creates a container with the appropriate runtime:
+
+```rust src/pipeline/garmr/mod.rs
+let (image, cmd) = match poc.language.as_str() {
+    "python" => ("python:3.12-slim", vec!["python", "-c", &poc.script]),
+    "node" => ("node:22-slim", vec!["node", "-e", &poc.script]),
+    _ => ("alpine:3.19", vec!["sh", "-c", &poc.script]),
+};
+
+let config = ContainerConfig {
+    image: Some(image.to_string()),
+    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+    host_config: Some(host_config),
+    working_dir: Some("/repo".to_string()),
+    user: Some("nobody".to_string()),
+    ..Default::default()
+};
+
+docker.create_container(Some(create_opts), config).await?;
+docker.start_container(&container_name, None).await?;
+```
+
+**Supported Runtimes:**
+
+| Language | Docker Image | Use Case |
+|----------|--------------|----------|
+| Python | `python:3.12-slim` | Web apps, data processing |
+| Node.js | `node:22-slim` | JavaScript/TypeScript codebases |
+| Bash | `alpine:3.19` | Shell scripts, general analysis |
+
+### Step 3: Capture Output
+
+```rust src/pipeline/garmr/mod.rs
+let mut log_stream = docker.logs(&container_name, Some(log_opts));
+let mut stdout = String::new();
+let mut stderr = String::new();
+
+while let Some(Ok(output)) = log_stream.next().await {
+    match output {
+        bollard::container::LogOutput::StdOut { message } => {
+            stdout.push_str(&String::from_utf8_lossy(&message));
+        }
+        bollard::container::LogOutput::StdErr { message } => {
+            stderr.push_str(&String::from_utf8_lossy(&message));
+        }
+        _ => {}
+    }
+}
+
+// Truncate for sanity
+stdout.truncate(10000);
+stderr.truncate(10000);
+```
+
+**Example Output:**
+
+```text
+Exit Code: 0
+Stdout:
+CONFIRMED: SQL injection vulnerability detected
+Evidence: Query uses format! without parameterization
+Found in line 67: let query = format!("SELECT * FROM users WHERE username LIKE '%{}%'", input);
+
+Stderr:
+(empty)
+```
+
+### Step 4: Analyze Results
+
+A second LLM call interprets the execution:
+
+```rust src/pipeline/garmr/mod.rs
+let request = CompletionRequest {
+    messages: vec![
+        Message {
+            role: "system".to_string(),
+            content: "You are analyzing proof-of-concept exploit execution results. \
+                      Determine if the PoC successfully demonstrated the vulnerability. \
+                      Output ONLY a JSON object: {\"verdict\": \"confirmed|unconfirmed|inconclusive\", \"analysis\": \"string\"}."
+                .to_string(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: format!(
+                "Vulnerability: {}\nSeverity: {}\n\n\
+                 PoC Script ({}):\n{}\n\n\
+                 Execution Results:\n\
+                 Exit code: {}\n\
+                 Stdout:\n{}\n\
+                 Stderr:\n{}\n\n\
+                 Did the PoC successfully demonstrate the vulnerability?",
+                finding.title,
+                finding.severity,
+                poc.language,
+                poc.script,
+                exec.exit_code,
+                exec.stdout,
+                exec.stderr,
+            ),
+        },
+    ],
+    // ...
+};
+```
+
+**Example Analysis Response:**
+
+```json
+{
+  "verdict": "confirmed",
+  "analysis": "The PoC successfully identified SQL injection vulnerability. Evidence: (1) Exit code 0 indicates positive detection, (2) Output shows vulnerable code pattern at line 67 using format! macro without parameterization, (3) Exploit confirmed the absence of bind() calls for user input sanitization. This is a valid SQL injection vulnerability with high confidence."
+}
+```
+
+<Accordion title="Other Verdict Types" icon="scale-balanced">
+  **unconfirmed:**
+  ```json
+  {
+    "verdict": "unconfirmed",
+    "analysis": "The PoC reported that path canonicalization is present at line 134, which mitigates path traversal attacks. Exit code 1 indicates the vulnerability does not exist in the current code. This is likely a false positive from static analysis."
+  }
+  ```
+  
+  **inconclusive:**
+  ```json
+  {
+    "verdict": "inconclusive",
+    "analysis": "The PoC timed out after 30 seconds without producing output. This could indicate: (1) the script entered an infinite loop, (2) the vulnerability requires live application state, or (3) the script has bugs. Manual review recommended."
+  }
+  ```
+</Accordion>
+
+## Safety Measures
+
+Garmr implements defense-in-depth to prevent malicious PoC scripts:
+
+<AccordionGroup>
+  <Accordion title="Network Isolation" icon="wifi-slash">
+    Containers have `network_mode: none`, blocking:
+    - DNS lookups
+    - HTTP/HTTPS requests
+    - Port scanning
+    - Data exfiltration
+  </Accordion>
+
+  <Accordion title="Filesystem Protection" icon="folder-lock">
+    - Repository mounted **read-only** (`:ro` flag)
+    - Container filesystem is ephemeral (deleted after execution)
+    - No access to host filesystem
+  </Accordion>
+
+  <Accordion title="Resource Constraints" icon="gauge">
+    - **CPU:** Limited to 1 core via `nano_cpus`
+    - **Memory:** Hard limit of 512 MB
+    - **Timeout:** Forceful termination after 30 seconds
+  </Accordion>
+
+  <Accordion title="Privilege Dropping" icon="user-lock">
+    - Runs as `nobody` user (UID 65534)
+    - No `--privileged` flag
+    - No volume mounts except read-only repo
+  </Accordion>
+
+  <Accordion title="Container Cleanup" icon="broom">
+    ```rust src/pipeline/garmr/mod.rs
+    let _ = docker
+        .remove_container(
+            &container_name,
+            Some(RemoveContainerOptions {
+                force: true,  // Kill if still running
+                ..Default::default()
+            }),
+        )
+        .await;
+    ```
+    
+    Containers are **always** removed, even if execution fails.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  While Garmr is designed to be safe, you should **never run Heimdall on untrusted repositories** or in production environments. Always use dedicated scan infrastructure.
+</Warning>
+
+## Database Storage
+
+Validation results are stored in the `findings` table:
+
+```sql
+ALTER TABLE findings
+  ADD COLUMN poc_validated BOOLEAN DEFAULT false,
+  ADD COLUMN poc_exploit_json JSONB;
+```
+
+Example stored data:
+
+```json
+{
+  "script": "import sys\nwith open('/repo/src/api/search.rs', 'r') as f:\n    source = f.read()\n...",
+  "language": "python",
+  "exit_code": 0,
+  "stdout": "CONFIRMED: SQL injection vulnerability detected\nEvidence: Query uses format! without parameterization\n",
+  "stderr": "",
+  "verdict": "confirmed",
+  "llm_analysis": "The PoC successfully identified SQL injection vulnerability. Evidence: (1) Exit code 0..."
+}
+```
+
+Query validated findings:
+
+```sql
+SELECT 
+  id,
+  title,
+  severity,
+  file_path,
+  poc_validated,
+  poc_exploit_json->>'verdict' as verdict
+FROM findings
+WHERE scan_id = 'YOUR_SCAN_ID'
+  AND poc_validated = true
+ORDER BY 
+  CASE severity
+    WHEN 'critical' THEN 0
+    WHEN 'high' THEN 1
+    WHEN 'medium' THEN 2
+    WHEN 'low' THEN 3
+  END;
+```
+
+## Performance
+
+Garmr validation typically takes:
+
+- **PoC generation:** 10-20 seconds per finding
+- **Container execution:** 1-30 seconds (usually < 5)
+- **Result analysis:** 5-10 seconds
+- **Total per finding:** ~20-60 seconds
+
+For a scan with 10 findings:
+- **Sequential:** ~5-10 minutes
+- **Parallel (future):** ~1-2 minutes
+
+<Info>
+  Garmr currently validates findings **sequentially** to limit Docker resource usage. A future version will support parallel validation.
+</Info>
+
+## Limitations
+
+Garmr cannot validate all vulnerability types:
+
+<CardGroup cols={2}>
+  <Card title="✅ Statically Provable" icon="check">
+    - SQL injection patterns
+    - Path traversal
+    - Hardcoded credentials
+    - Missing authentication
+    - Unsafe deserialization
+  </Card>
+  <Card title="❌ Requires Live State" icon="xmark">
+    - Race conditions
+    - Session fixation
+    - CSRF (needs browser)
+    - XSS (needs DOM)
+    - Business logic flaws
+  </Card>
+</CardGroup>
+
+For vulnerabilities requiring live application state, Garmr will return `verdict: "inconclusive"` and rely on other confidence signals.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Hunt Agent" icon="crosshairs" href="/features/hunt-agent">
+    Learn how Hunt discovers the findings Garmr validates
+  </Card>
+  <Card title="Findings Management" icon="list-check" href="/features/findings-management">
+    Manage validated findings and apply patches
+  </Card>
+  <Card title="Scan Pipeline" icon="gears" href="/features/scan-pipeline">
+    See where Garmr fits in the complete workflow
+  </Card>
+  <Card title="Threat Modeling" icon="shield" href="/features/threat-modeling">
+    Understand how Tyr identifies attack surfaces
+  </Card>
+</CardGroup>

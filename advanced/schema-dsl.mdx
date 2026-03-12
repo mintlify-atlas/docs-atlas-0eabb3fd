@@ -1,0 +1,352 @@
+---
+title: Schema DSL
+description: Define your database schema once in Rust and generate idempotent migrations for any database driver
+---
+
+Heimdall uses a custom schema DSL that lets you define your database structure in Rust code. The system generates driver-specific DDL automatically—no hand-written migration files required.
+
+## Why a Schema DSL?
+
+Traditional migration workflows require manually writing SQL for each database driver. Heimdall's DSL approach:
+
+- **Define once, deploy anywhere**: Write your schema in Rust, generate SQL for Postgres, SQLite, MySQL, or MongoDB
+- **Type-safe**: Compile-time checks ensure your schema is valid
+- **Idempotent by default**: All DDL uses `IF NOT EXISTS` / `DROP TRIGGER IF EXISTS`—safe to run repeatedly
+- **Version control friendly**: Schema definition lives in `src/db/schema/definition.rs` as source code
+
+## Schema Definition
+
+The complete Heimdall schema is defined in `src/db/schema/definition.rs`:
+
+```rust
+Schema::new()
+    .extension("pgcrypto")
+    .table("users", |t| {
+        t.uuid_pk("id");
+        t.text("email").unique().not_null();
+        t.text("password_hash").not_null();
+        t.text("display_name");
+        t.text("role").not_null().default_str("'user'");
+        t.timestamps();
+        t.soft_delete();
+    })
+    .table("repos", |t| {
+        t.uuid_pk("id");
+        t.uuid("user_id")
+            .not_null()
+            .references("users", "id")
+            .on_delete(OnDelete::Cascade);
+        t.text("name").not_null();
+        t.text("source_type").not_null();
+        t.timestamps();
+        t.soft_delete();
+    })
+    .index("idx_repos_user", "repos", &["user_id"])
+    .build()
+```
+
+### Available Column Types
+
+| Builder Method | SQL Type | Description |
+|----------------|----------|-------------|
+| `uuid_pk(name)` | `UUID PRIMARY KEY` | Auto-generates UUIDs using `gen_random_uuid()` |
+| `uuid(name)` | `UUID` | Standard UUID column |
+| `text(name)` | `TEXT` | Variable-length text |
+| `integer(name)` / `int(name)` | `INTEGER` | Whole numbers |
+| `boolean(name)` | `BOOLEAN` | True/false |
+| `timestamp(name)` | `TIMESTAMPTZ` | Timezone-aware timestamp |
+| `jsonb(name)` | `JSONB` | JSON with binary storage (Postgres) |
+
+### Column Modifiers
+
+Chain modifiers to customize columns:
+
+```rust
+t.text("email")
+    .unique()        // Add UNIQUE constraint
+    .not_null()      // NOT NULL constraint
+    .default_str("'value'")  // Default literal value
+```
+
+```rust
+t.integer("count")
+    .not_null()
+    .default_int(0)  // Default integer value
+```
+
+```rust
+t.boolean("active")
+    .not_null()
+    .default_bool(true)  // Default boolean value
+```
+
+### Foreign Keys
+
+Define relationships with `.references()`:
+
+```rust
+t.uuid("repo_id")
+    .not_null()
+    .references("repos", "id")
+    .on_delete(OnDelete::Cascade)  // Delete child rows when parent is deleted
+```
+
+Available `OnDelete` behaviors:
+- `OnDelete::Cascade` — Delete dependent rows
+- `OnDelete::SetNull` — Set foreign key to NULL
+- `OnDelete::Restrict` — Prevent deletion if dependents exist (default)
+
+### Composite Constraints
+
+```rust
+t.unique_together(&["org_id", "user_id"])  // UNIQUE(org_id, user_id)
+```
+
+### Helper Methods
+
+**Timestamps** — adds `created_at` and `updated_at` columns:
+
+```rust
+t.timestamps();
+// Generates:
+//   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+//   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+```
+
+Also creates a trigger that automatically updates `updated_at` on every row modification.
+
+**Soft delete** — adds `deleted_at` column for logical deletes:
+
+```rust
+t.soft_delete();
+// Generates:
+//   deleted_at TIMESTAMPTZ
+```
+
+### Indexes
+
+Add indexes at the schema level:
+
+```rust
+.index("idx_findings_scan", "findings", &["scan_id"])
+.unique_index("idx_users_email", "users", &["email"])
+```
+
+Or as part of the table definition:
+
+```rust
+.table("scans", |t| {
+    t.uuid_pk("id");
+    t.text("status");
+    t.index(&["status"]);
+});
+```
+
+## Automatic Schema Application
+
+On every startup, Heimdall:
+
+1. Calls `heimdall_schema()` to build the schema definition
+2. Generates full DDL for the configured driver (Postgres, MySQL, SQLite, or MongoDB)
+3. Executes the DDL using idempotent statements:
+   - `CREATE TABLE IF NOT EXISTS`
+   - `CREATE INDEX IF NOT EXISTS`
+   - `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` (for `updated_at` automation)
+
+This means **no migration files are required** for development or production deployments.
+
+```rust
+// In main.rs or database initialization:
+let ddl = generate_ddl(DbDriver::Postgres);
+db.execute(&ddl).await?;
+```
+
+The schema is applied automatically when you run:
+
+```bash
+cargo run --bin heimdall
+```
+
+## Generating Migration Files
+
+For CI/CD pipelines, external tooling, or manual review, you can export migration SQL files:
+
+```bash
+# Generate migration for a specific driver
+cargo run --bin schema_gen -- postgres   # → migrations/active/postgres.sql
+cargo run --bin schema_gen -- sqlite     # → migrations/sqlite/sqlite.sql
+cargo run --bin schema_gen -- mysql      # → migrations/mysql/mysql.sql
+
+# Generate for all drivers
+cargo run --bin schema_gen -- all
+```
+
+### Output Structure
+
+Migrations are written to:
+
+```
+migrations/
+├── active/          # Postgres (default)
+│   └── postgres.sql
+├── sqlite/
+│   └── sqlite.sql
+├── mysql/
+│   └── mysql.sql
+└── mongo/
+    └── mongo.js
+```
+
+## Incremental Migrations
+
+Heimdall supports **smart incremental migrations** by snapshotting the schema and diffing on the next generation:
+
+```bash
+cargo run --bin schema_gen -- postgres --incremental
+```
+
+### How It Works
+
+1. **First run**: Generates full schema → saves snapshot in `.schema_snapshot.json`
+2. **Subsequent runs**: 
+   - Loads snapshot
+   - Compares against current `heimdall_schema()`
+   - Generates only the changes:
+     - `ALTER TABLE ... ADD COLUMN ...`
+     - `CREATE INDEX IF NOT EXISTS ...`
+     - `DROP INDEX IF EXISTS ...`
+
+### Example Incremental Migration
+
+If you add a new column to `users`:
+
+```rust
+// Add to schema definition:
+t.text("phone_number");
+```
+
+Running `schema_gen` with `--incremental` generates:
+
+```sql
+-- Incremental migration (2 changes detected)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;
+```
+
+The snapshot is updated after successful generation.
+
+## Schema Versioning
+
+The schema definition in `src/db/schema/definition.rs` is the **single source of truth**. Version control your schema changes:
+
+```bash
+git diff src/db/schema/definition.rs
+```
+
+For production deployments:
+
+1. **Option A**: Run `cargo run --bin heimdall` and let automatic schema application handle it
+2. **Option B**: Generate migration files in CI, review them, and apply manually:
+
+```bash
+# In CI:
+cargo run --bin schema_gen -- postgres --incremental
+git diff migrations/active/postgres.sql  # Review changes
+
+# In production:
+psql $DATABASE_URL < migrations/active/postgres.sql
+```
+
+## Driver-Specific Notes
+
+### PostgreSQL
+
+- Uses `gen_random_uuid()` for UUID generation (requires `pgcrypto` extension)
+- `JSONB` for JSON columns
+- Triggers for `updated_at` automation
+
+### SQLite
+
+- Uses `lower(hex(randomblob(16)))` for UUID generation
+- `TEXT` for JSON (no native JSONB)
+- No trigger support for `updated_at`—handle in application code
+
+### MySQL
+
+- Uses `UUID()` function for UUID generation
+- `JSON` column type (MySQL 5.7.8+)
+- Triggers supported
+
+### MongoDB
+
+Generates JavaScript schema validation scripts instead of SQL DDL.
+
+## Testing Your Schema
+
+The schema builder includes unit tests:
+
+```bash
+cargo test --lib db::schema
+```
+
+Test examples:
+
+```rust
+#[test]
+fn test_basic_table_builder() {
+    let schema = Schema::new()
+        .table("users", |t| {
+            t.uuid_pk("id");
+            t.text("email").unique().not_null();
+            t.timestamps();
+        })
+        .build();
+
+    assert_eq!(schema.tables.len(), 1);
+    let id_col = &schema.tables[0].columns[0];
+    assert!(id_col.primary_key);
+}
+```
+
+## Best Practices
+
+1. **Always use `timestamps()`** for audit trails
+2. **Prefer `soft_delete()`** over hard deletes for user-facing data
+3. **Index foreign keys** explicitly for query performance:
+   ```rust
+   .index("idx_scans_repo", "scans", &["repo_id"])
+   ```
+4. **Use composite unique constraints** for natural keys:
+   ```rust
+   t.unique_together(&["org_id", "user_id"]);
+   ```
+5. **Set `ON DELETE` behavior** explicitly on every foreign key
+
+## Example: Adding a New Table
+
+```rust
+// In src/db/schema/definition.rs, add to heimdall_schema():
+
+.table("notifications", |t| {
+    t.uuid_pk("id");
+    t.uuid("user_id")
+        .not_null()
+        .references("users", "id")
+        .on_delete(OnDelete::Cascade);
+    t.text("title").not_null();
+    t.text("body");
+    t.boolean("read").not_null().default_bool(false);
+    t.timestamps();
+})
+.index("idx_notifications_user_read", "notifications", &["user_id", "read"])
+```
+
+Then restart the server—the table is created automatically.
+
+## Related Files
+
+- `src/db/schema/definition.rs` — Schema definition (source of truth)
+- `src/db/schema/builder.rs` — DSL builder implementation
+- `src/db/schema/generator.rs` — DDL generators for each driver
+- `src/db/schema/diff.rs` — Schema diffing for incremental migrations
+- `src/db/schema/snapshot.rs` — Snapshot serialization
+- `src/bin/schema_gen.rs` — CLI tool for migration generation

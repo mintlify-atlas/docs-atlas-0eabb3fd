@@ -1,0 +1,224 @@
+---
+title: 'OAuth Authentication'
+description: 'Authenticate via GitHub or GitLab OAuth'
+---
+
+## Overview
+
+Heimdall supports OAuth authentication with GitHub and GitLab. The OAuth flow allows users to authenticate using their existing provider accounts and automatically links repository access.
+
+## GitHub OAuth
+
+### GET /api/auth/github/authorize
+
+Initiates the GitHub OAuth flow by redirecting the user to GitHub's authorization page.
+
+#### Query Parameters
+
+<ParamField query="next" type="string">
+  Optional redirect path after successful authentication. Must be a relative path starting with `/`.
+</ParamField>
+
+#### Response
+
+Redirects to GitHub's OAuth authorization page with the following scopes:
+- `read:user` - Access to user profile information
+- `user:email` - Access to user email addresses
+- `repo` - Access to repositories
+
+#### Example Request
+
+```bash
+curl -L "https://api.heimdall.example/api/auth/github/authorize?next=/repos/new"
+```
+
+### GET /api/auth/github/callback
+
+Handles the OAuth callback from GitHub after user authorization.
+
+#### Query Parameters
+
+<ParamField query="code" type="string" required>
+  Authorization code from GitHub.
+</ParamField>
+
+<ParamField query="state" type="string" required>
+  CSRF protection state parameter.
+</ParamField>
+
+<ParamField query="error" type="string">
+  Error code if authorization failed.
+</ParamField>
+
+<ParamField query="error_description" type="string">
+  Human-readable error description.
+</ParamField>
+
+#### Response
+
+On success, redirects to the specified `next` path (or `/repos/new` by default) with a session cookie set.
+
+#### Error Responses
+
+##### Missing Authorization Code (400)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 400,
+    "message": "Missing authorization code"
+  }
+}
+```
+
+##### Invalid State Parameter (400)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 400,
+    "message": "Invalid OAuth state parameter"
+  }
+}
+```
+
+##### GitHub Account Already Linked (302)
+
+If the GitHub account is already linked to a different user, redirects to `/settings?integration_error=github-account-in-use`.
+
+## GitLab OAuth
+
+### GET /api/auth/gitlab/authorize
+
+Initiates the GitLab OAuth flow by redirecting the user to GitLab's authorization page.
+
+#### Query Parameters
+
+<ParamField query="next" type="string">
+  Optional redirect path after successful authentication. Must be a relative path starting with `/`.
+</ParamField>
+
+#### Response
+
+Redirects to GitLab's OAuth authorization page with the following scopes:
+- `read_user` - Access to user profile information
+- `read_repository` - Read access to repositories
+
+#### Configuration
+
+The GitLab base URL is configurable via the `GITLAB_BASE_URL` environment variable (defaults to `https://gitlab.com`).
+
+#### Example Request
+
+```bash
+curl -L "https://api.heimdall.example/api/auth/gitlab/authorize?next=/repos/new"
+```
+
+### GET /api/auth/gitlab/callback
+
+Handles the OAuth callback from GitLab after user authorization.
+
+#### Query Parameters
+
+<ParamField query="code" type="string" required>
+  Authorization code from GitLab.
+</ParamField>
+
+<ParamField query="state" type="string" required>
+  CSRF protection state parameter.
+</ParamField>
+
+<ParamField query="error" type="string">
+  Error code if authorization failed.
+</ParamField>
+
+<ParamField query="error_description" type="string">
+  Human-readable error description.
+</ParamField>
+
+#### Response
+
+On success, redirects to the specified `next` path (or `/repos/new` by default) with a session cookie set.
+
+#### Error Responses
+
+##### Missing Authorization Code (400)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 400,
+    "message": "Missing authorization code"
+  }
+}
+```
+
+##### Invalid State Parameter (400)
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": 400,
+    "message": "Invalid OAuth state parameter"
+  }
+}
+```
+
+##### GitLab Account Already Linked (302)
+
+If the GitLab account is already linked to a different user, redirects to `/settings?integration_error=gitlab-account-in-use`.
+
+## OAuth Flow Details
+
+### First-Time Authentication
+
+When a user authenticates via OAuth for the first time:
+
+1. If a user with the same email exists, the OAuth account is linked to that user
+2. If no user exists, a new user account is created with:
+   - Email from the OAuth provider
+   - Display name from the provider profile
+   - Avatar URL from the provider profile
+   - A random password hash (OAuth users don't use password login)
+3. A session token is created and returned as a cookie
+4. OAuth connection details are stored (access token, refresh token, scopes, expiry)
+
+### Linking to Existing Session
+
+If a user is already logged in and initiates OAuth:
+
+1. The OAuth account is linked to the current user
+2. If the OAuth account is already linked to a different user, an error is returned
+3. User avatar is updated from the OAuth provider
+4. The existing session is maintained (no new session created)
+
+### Security Features
+
+- **CSRF Protection**: State parameter is validated to prevent cross-site request forgery
+- **Secure Cookies**: Session cookies are HTTP-only and use `SameSite=Lax`
+- **Token Encryption**: OAuth access tokens are encrypted before storage using AES-GCM
+- **Token Expiry**: OAuth tokens with expiry times are tracked and can be refreshed
+
+### Environment Variables
+
+Required OAuth configuration:
+
+```bash
+# GitHub OAuth
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
+GITHUB_REDIRECT_URI=https://api.heimdall.example/api/auth/github/callback
+
+# GitLab OAuth
+GITLAB_CLIENT_ID=your_gitlab_client_id
+GITLAB_CLIENT_SECRET=your_gitlab_client_secret
+GITLAB_REDIRECT_URI=https://api.heimdall.example/api/auth/gitlab/callback
+GITLAB_BASE_URL=https://gitlab.com
+
+# Token encryption key (32-byte hex)
+ENCRYPTION_KEY=your_encryption_key_hex
+```

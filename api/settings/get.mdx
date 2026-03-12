@@ -1,0 +1,77 @@
+---
+title: "Get Settings"
+api: "GET /api/settings"
+description: "Retrieve current AI provider configuration without exposing secret keys"
+---
+
+## Overview
+
+Returns the current AI provider configuration, indicating which providers have API keys configured and the default model. This endpoint does not expose any secret values.
+
+## Authentication
+
+Requires authentication via session cookie or bearer token.
+
+## Response
+
+<ResponseField name="has_anthropic" type="boolean">
+  Whether an Anthropic API key is configured (from environment or database)
+</ResponseField>
+
+<ResponseField name="has_openai" type="boolean">
+  Whether an OpenAI API key is configured
+</ResponseField>
+
+<ResponseField name="has_ollama" type="boolean">
+  Whether an Ollama URL is configured
+</ResponseField>
+
+<ResponseField name="default_model" type="string">
+  The default AI model identifier (e.g., `claude-sonnet-4-20250514`, `gpt-4o-mini`)
+</ResponseField>
+
+## Example
+
+<CodeGroup>
+```bash cURL
+curl -X GET https://api.heimdall.dev/api/settings \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+```javascript JavaScript
+const response = await fetch('https://api.heimdall.dev/api/settings', {
+  headers: {
+    'Authorization': 'Bearer YOUR_TOKEN'
+  }
+});
+const data = await response.json();
+```
+
+```python Python
+import requests
+
+response = requests.get(
+    'https://api.heimdall.dev/api/settings',
+    headers={'Authorization': 'Bearer YOUR_TOKEN'}
+)
+data = response.json()
+```
+</CodeGroup>
+
+## Response Example
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "has_anthropic": true,
+    "has_openai": false,
+    "has_ollama": true,
+    "default_model": "claude-sonnet-4-20250514"
+  }
+}
+```
+
+## Implementation Reference
+
+See `src/routes/settings.rs:228` for the endpoint implementation.

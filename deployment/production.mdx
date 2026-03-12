@@ -1,0 +1,635 @@
+---
+title: Production Deployment
+description: Deploy Heimdall securely in production environments
+---
+
+This guide covers production-ready deployment of Heimdall with security hardening, monitoring, and backup strategies.
+
+## Pre-Deployment Checklist
+
+<Steps>
+  <Step title="Generate secure keys">
+    ```bash
+    # Encryption key (32 bytes)
+    openssl rand -hex 32
+    
+    # Webhook secret (20 bytes)
+    openssl rand -hex 20
+    ```
+    
+    Store these in your `.env` file.
+  </Step>
+
+  <Step title="Configure AI providers">
+    Set at least one API key:
+    ```bash
+    ANTHROPIC_API_KEY=sk-ant-...
+    # or OPENAI_API_KEY=sk-...
+    # or OLLAMA_URL=http://localhost:11434
+    ```
+  </Step>
+
+  <Step title="Set production database">
+    Use a managed database service or a dedicated PostgreSQL instance:
+    ```bash
+    DATABASE_URL=postgres://heimdall:secure_password@db.example.com:5432/heimdall
+    ```
+  </Step>
+
+  <Step title="Configure TLS">
+    Either:
+    - Use a reverse proxy (recommended) → set `TLS_ENABLED=false`
+    - Or enable TLS in Heimdall → set `TLS_ENABLED=true` and provide certificates
+  </Step>
+
+  <Step title="Update CORS origin">
+    ```bash
+    CORS_ALLOWED_ORIGIN=https://heimdall.example.com
+    ```
+  </Step>
+</Steps>
+
+## Building the Release Binary
+
+### Option 1: Native Build
+
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
+
+# Clone repository
+git clone https://github.com/modestnerd/heimdall.git
+cd heimdall
+
+# Build optimized release binary
+cargo build --release
+
+# Binary location
+ls -lh target/release/heimdall
+```
+
+### Option 2: Docker Build
+
+```bash
+# Build Docker image
+docker compose build --build-arg DB_DRIVER=postgres
+
+# Or use multi-platform builds
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg DB_DRIVER=postgres \
+  -t heimdall:latest .
+```
+
+<Note>
+The Docker build automatically handles schema generation and migration compilation.
+</Note>
+
+## Database Setup
+
+### PostgreSQL (Recommended)
+
+<Steps>
+  <Step title="Install PostgreSQL">
+    ```bash
+    # Ubuntu/Debian
+    sudo apt update
+    sudo apt install postgresql-17 postgresql-contrib
+    
+    # macOS
+    brew install postgresql@17
+    ```
+  </Step>
+
+  <Step title="Create database and user">
+    ```bash
+    sudo -u postgres psql
+    ```
+    
+    ```sql
+    CREATE DATABASE heimdall;
+    CREATE USER heimdall WITH ENCRYPTED PASSWORD 'your_secure_password';
+    GRANT ALL PRIVILEGES ON DATABASE heimdall TO heimdall;
+    \q
+    ```
+  </Step>
+
+  <Step title="Configure connection pooling (optional)">
+    Use PgBouncer for connection pooling:
+    ```bash
+    sudo apt install pgbouncer
+    ```
+    
+    Edit `/etc/pgbouncer/pgbouncer.ini`:
+    ```ini
+    [databases]
+    heimdall = host=localhost port=5432 dbname=heimdall
+    
+    [pgbouncer]
+    listen_addr = 127.0.0.1
+    listen_port = 6432
+    auth_type = md5
+    pool_mode = transaction
+    max_client_conn = 100
+    default_pool_size = 20
+    ```
+  </Step>
+
+  <Step title="Test connection">
+    ```bash
+    psql "postgres://heimdall:your_secure_password@localhost:5432/heimdall" -c "SELECT 1;"
+    ```
+  </Step>
+</Steps>
+
+### Managed Database Services
+
+Heimdall works with managed PostgreSQL services:
+
+<CodeGroup>
+
+```bash AWS RDS
+DATABASE_URL=postgres://heimdall:password@heimdall.abc123.us-east-1.rds.amazonaws.com:5432/heimdall
+```
+
+```bash Google Cloud SQL
+DATABASE_URL=postgres://heimdall:password@/heimdall?host=/cloudsql/project:region:instance
+```
+
+```bash Azure Database
+DATABASE_URL=postgres://heimdall@server:password@server.postgres.database.azure.com:5432/heimdall?sslmode=require
+```
+
+```bash DigitalOcean
+DATABASE_URL=postgres://heimdall:password@db-postgresql-nyc3-12345-do-user-123456-0.db.ondigitalocean.com:25060/heimdall?sslmode=require
+```
+
+</CodeGroup>
+
+<Warning>
+Always use SSL/TLS for database connections in production by adding `?sslmode=require` to your connection string.
+</Warning>
+
+## Security Hardening
+
+### 1. Environment Variables
+
+Never commit `.env` files. Use secrets management:
+
+<CodeGroup>
+
+```bash Docker Secrets
+# Create secrets
+echo "your_encryption_key" | docker secret create encryption_key -
+echo "your_webhook_secret" | docker secret create webhook_secret -
+
+# Reference in docker-compose.yml
+secrets:
+  - encryption_key
+  - webhook_secret
+```
+
+```bash Kubernetes Secrets
+kubectl create secret generic heimdall-secrets \
+  --from-literal=encryption-key='your_key' \
+  --from-literal=webhook-secret='your_secret' \
+  --from-literal=anthropic-api-key='your_api_key'
+```
+
+```bash Vault
+# Store in HashiCorp Vault
+vault kv put secret/heimdall \
+  encryption_key='your_key' \
+  webhook_secret='your_secret'
+
+# Retrieve at runtime
+export ENCRYPTION_KEY=$(vault kv get -field=encryption_key secret/heimdall)
+```
+
+</CodeGroup>
+
+### 2. Network Security
+
+```bash
+# Firewall rules (UFW example)
+sudo ufw allow 22/tcp   # SSH
+sudo ufw allow 443/tcp  # HTTPS
+sudo ufw deny 8080/tcp  # Block direct access to Heimdall
+sudo ufw enable
+
+# Only allow reverse proxy to access Heimdall
+APP_HOST=127.0.0.1  # Bind to localhost only
+APP_PORT=8080
+```
+
+### 3. Docker Socket Security
+
+<Warning>
+Heimdall requires Docker socket access for the Garmr sandbox. This is a privileged operation.
+</Warning>
+
+Minimize risk:
+
+```yaml
+# docker-compose.yml
+services:
+  heimdall:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only mount
+    user: "1000:999"  # Non-root user in docker group
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+```
+
+### 4. Database Security
+
+```bash
+# PostgreSQL authentication (pg_hba.conf)
+# Require SSL for remote connections
+hostssl all all 0.0.0.0/0 scram-sha-256
+
+# Rotate passwords regularly
+ALTER USER heimdall WITH PASSWORD 'new_secure_password';
+
+# Enable audit logging
+ALTER DATABASE heimdall SET log_statement = 'mod';
+```
+
+### 5. Rate Limiting
+
+Implement rate limiting at the reverse proxy level (see [Reverse Proxy](/deployment/reverse-proxy)).
+
+## Running as a System Service
+
+Create a systemd service for automatic startup and restart:
+
+```bash
+# /etc/systemd/system/heimdall.service
+[Unit]
+Description=Heimdall Security Scanner
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=heimdall
+Group=heimdall
+WorkingDirectory=/opt/heimdall
+EnvironmentFile=/opt/heimdall/.env
+ExecStart=/opt/heimdall/heimdall
+Restart=on-failure
+RestartSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/heimdall/repos
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=heimdall
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable heimdall
+sudo systemctl start heimdall
+sudo systemctl status heimdall
+```
+
+View logs:
+
+```bash
+journalctl -u heimdall -f
+```
+
+## Monitoring and Logging
+
+### Health Checks
+
+Heimdall exposes a health endpoint:
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+Integrate with monitoring tools:
+
+<CodeGroup>
+
+```yaml Prometheus
+scrape_configs:
+  - job_name: 'heimdall'
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['localhost:8080']
+```
+
+```yaml Uptime Kuma
+- name: Heimdall
+  type: http
+  url: https://heimdall.example.com/health
+  interval: 60
+  expected_status: 200
+```
+
+```bash Healthchecks.io
+# Cron job
+*/5 * * * * curl -fsS --retry 3 https://hc-ping.com/your-uuid && curl -f http://localhost:8080/health
+```
+
+</CodeGroup>
+
+### Application Logs
+
+Configure structured logging:
+
+```bash
+# Detailed logging
+RUST_LOG=info,heimdall=debug,actix_web=info
+
+# Production logging (less verbose)
+RUST_LOG=info,heimdall=info
+
+# Error-only logging
+RUST_LOG=error,heimdall=warn
+```
+
+Ship logs to aggregation services:
+
+<CodeGroup>
+
+```bash Loki
+# Install promtail
+curl -s https://raw.githubusercontent.com/grafana/loki/main/tools/promtail.sh | bash
+
+# Configure promtail.yml
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: heimdall
+    journal:
+      labels:
+        job: heimdall
+```
+
+```bash Elasticsearch
+# Use Filebeat
+filebeat.inputs:
+- type: journald
+  id: heimdall
+  include_matches:
+    - "_SYSTEMD_UNIT=heimdall.service"
+
+output.elasticsearch:
+  hosts: ["localhost:9200"]
+```
+
+</CodeGroup>
+
+### Database Monitoring
+
+```sql
+-- Monitor active connections
+SELECT count(*) FROM pg_stat_activity WHERE datname = 'heimdall';
+
+-- Check slow queries
+SELECT pid, now() - query_start as duration, query
+FROM pg_stat_activity
+WHERE state = 'active' AND now() - query_start > interval '5 seconds';
+
+-- Table sizes
+SELECT 
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+```
+
+## Backup Strategies
+
+### Database Backups
+
+<Steps>
+  <Step title="Automated PostgreSQL backups">
+    ```bash
+    #!/bin/bash
+    # /opt/scripts/backup-heimdall.sh
+    
+    BACKUP_DIR="/backups/heimdall"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    
+    # Create backup
+    pg_dump -h localhost -U heimdall -Fc heimdall > "$BACKUP_DIR/heimdall_$TIMESTAMP.dump"
+    
+    # Compress
+    gzip "$BACKUP_DIR/heimdall_$TIMESTAMP.dump"
+    
+    # Delete backups older than 30 days
+    find "$BACKUP_DIR" -name "*.dump.gz" -mtime +30 -delete
+    
+    # Upload to S3 (optional)
+    aws s3 cp "$BACKUP_DIR/heimdall_$TIMESTAMP.dump.gz" s3://my-backups/heimdall/
+    ```
+  </Step>
+
+  <Step title="Schedule with cron">
+    ```bash
+    # Daily backups at 2 AM
+    0 2 * * * /opt/scripts/backup-heimdall.sh >> /var/log/heimdall-backup.log 2>&1
+    ```
+  </Step>
+
+  <Step title="Test restore procedure">
+    ```bash
+    # Restore from backup
+    gunzip < /backups/heimdall/heimdall_20260312_020000.dump.gz | \
+      pg_restore -h localhost -U heimdall -d heimdall_test --clean --if-exists
+    ```
+  </Step>
+</Steps>
+
+### Repository Data Backups
+
+Cloned repositories are stored in the filesystem:
+
+```bash
+# Default location: /app/repos (in Docker) or ./repos (native)
+
+# Backup script
+#!/bin/bash
+REPO_DIR="/opt/heimdall/repos"
+BACKUP_DIR="/backups/heimdall-repos"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+tar -czf "$BACKUP_DIR/repos_$TIMESTAMP.tar.gz" -C "$REPO_DIR" .
+
+# Cleanup old backups
+find "$BACKUP_DIR" -name "*.tar.gz" -mtime +7 -delete
+```
+
+<Note>
+Repository data can be safely deleted — Heimdall will re-clone repositories when needed for new scans.
+</Note>
+
+## Scaling Considerations
+
+### Vertical Scaling
+
+Minimum recommended resources:
+
+| Component | CPU | RAM | Storage |
+|-----------|-----|-----|----------|
+| Heimdall | 2 cores | 4 GB | 20 GB |
+| PostgreSQL | 2 cores | 4 GB | 50 GB |
+| Total | 4 cores | 8 GB | 70 GB |
+
+For heavy usage (multiple concurrent scans):
+
+| Component | CPU | RAM | Storage |
+|-----------|-----|-----|----------|
+| Heimdall | 4-8 cores | 8-16 GB | 50 GB |
+| PostgreSQL | 4 cores | 8 GB | 200 GB |
+
+### Worker Configuration
+
+```bash
+# Enable background worker
+WORKER_ENABLED=true
+
+# Poll interval for queued scans (seconds)
+WORKER_POLL_INTERVAL_SECS=5
+
+# Timeout for stale scans (minutes)
+WORKER_STALE_TIMEOUT_MINS=10
+```
+
+### Database Connection Pool
+
+```bash
+# Increase max connections in postgresql.conf
+max_connections = 200
+
+# Use PgBouncer for connection pooling
+default_pool_size = 20
+max_client_conn = 100
+```
+
+## Updates and Maintenance
+
+### Updating Heimdall
+
+<Steps>
+  <Step title="Pull latest code">
+    ```bash
+    cd /opt/heimdall
+    git pull origin main
+    ```
+  </Step>
+
+  <Step title="Rebuild">
+    ```bash
+    cargo build --release
+    # or
+    docker compose build
+    ```
+  </Step>
+
+  <Step title="Restart service">
+    ```bash
+    sudo systemctl restart heimdall
+    # or
+    docker compose restart heimdall
+    ```
+    
+    <Note>
+    Schema changes are applied automatically on startup.
+    </Note>
+  </Step>
+
+  <Step title="Verify">
+    ```bash
+    curl http://localhost:8080/health
+    journalctl -u heimdall -n 50
+    ```
+  </Step>
+</Steps>
+
+### Zero-Downtime Updates
+
+For critical deployments:
+
+1. Run two instances behind a load balancer
+2. Update one instance at a time
+3. Use health checks to route traffic only to healthy instances
+
+## Troubleshooting
+
+### High CPU usage
+
+Check for:
+- Multiple concurrent scans (review `scans` table)
+- Stuck worker processes (`ps aux | grep heimdall`)
+- Reduce `WORKER_POLL_INTERVAL_SECS`
+
+### High memory usage
+
+Check for:
+- Large repositories being scanned
+- Memory leaks in AI provider connections (check logs)
+- Increase available RAM or limit concurrent scans
+
+### Database connection errors
+
+```bash
+# Check PostgreSQL is running
+sudo systemctl status postgresql
+
+# Test connection
+psql $DATABASE_URL -c "SELECT 1;"
+
+# Check connection limits
+SELECT count(*) FROM pg_stat_activity;
+```
+
+### Scan failures
+
+Check logs:
+```bash
+journalctl -u heimdall | grep ERROR
+```
+
+Common issues:
+- AI provider API key invalid/expired
+- Docker socket permission denied
+- Insufficient disk space for cloning repos
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Reverse Proxy Setup" icon="server" href="/deployment/reverse-proxy">
+    Configure Nginx with TLS and SSE support
+  </Card>
+  <Card title="Configuration Reference" icon="gear" href="/configuration">
+    Complete list of environment variables
+  </Card>
+</CardGroup>

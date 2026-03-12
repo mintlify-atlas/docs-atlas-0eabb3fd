@@ -1,0 +1,198 @@
+---
+title: "Get Finding"
+api: "GET /api/findings/{id}"
+description: "Retrieve a single security finding by its unique identifier"
+---
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique UUID of the finding to retrieve
+</ParamField>
+
+## Response
+
+Returns a Finding object containing complete details about the security vulnerability.
+
+<ResponseField name="data" type="object">
+  The finding object
+  
+  <Expandable title="Finding Properties">
+    <ResponseField name="id" type="string">
+      Unique identifier (UUID) for the finding
+    </ResponseField>
+    
+    <ResponseField name="scan_id" type="string">
+      UUID of the scan that discovered this finding
+    </ResponseField>
+    
+    <ResponseField name="repo_id" type="string">
+      UUID of the repository where the finding was detected
+    </ResponseField>
+    
+    <ResponseField name="source" type="string">
+      Source of the finding detection
+      - `ai` - Detected by AI-powered analysis
+      - `static` - Found by static analysis tools
+      - `dependencies` - Identified in dependency scan
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      Current triage status of the finding
+      - `open` - Newly discovered, awaiting review
+      - `confirmed` - Verified as a true positive
+      - `dismissed` - Acknowledged but not prioritized
+      - `false_positive` - Determined to be incorrect
+      - `fixed` - Remediation has been applied
+    </ResponseField>
+    
+    <ResponseField name="severity" type="string">
+      Severity level of the vulnerability
+      - `critical` - Requires immediate attention
+      - `high` - Significant risk, prioritize remediation
+      - `medium` - Moderate risk
+      - `low` - Minor risk or informational
+    </ResponseField>
+    
+    <ResponseField name="confidence" type="string">
+      Confidence level in the finding accuracy
+      - `high` - Strong evidence supporting the finding
+      - `medium` - Moderate confidence
+      - `low` - Requires additional verification
+    </ResponseField>
+    
+    <ResponseField name="title" type="string">
+      Short, human-readable title describing the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="description" type="string" nullable>
+      Detailed explanation of the security issue and its implications
+    </ResponseField>
+    
+    <ResponseField name="cwe_id" type="string" nullable>
+      Common Weakness Enumeration identifier (e.g., "CWE-79")
+    </ResponseField>
+    
+    <ResponseField name="cve_id" type="string" nullable>
+      Common Vulnerabilities and Exposures identifier (e.g., "CVE-2024-1234")
+    </ResponseField>
+    
+    <ResponseField name="file_path" type="string">
+      Relative path to the file containing the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="line_start" type="integer">
+      Starting line number of the vulnerable code
+    </ResponseField>
+    
+    <ResponseField name="line_end" type="integer" nullable>
+      Ending line number if the issue spans multiple lines
+    </ResponseField>
+    
+    <ResponseField name="code_snippet" type="string" nullable>
+      Excerpt of the vulnerable code for context
+    </ResponseField>
+    
+    <ResponseField name="suggested_patch" type="string" nullable>
+      Proposed code changes to remediate the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="poc_exploit_json" type="object" nullable>
+      Proof-of-concept exploit data demonstrating the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="poc_validated" type="boolean">
+      Whether the proof-of-concept has been validated
+    </ResponseField>
+    
+    <ResponseField name="fingerprint" type="string">
+      Unique hash identifying this class of vulnerability for deduplication
+    </ResponseField>
+    
+    <ResponseField name="agent_reasoning" type="string" nullable>
+      Detailed reasoning from the AI agent explaining why this was flagged
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp when the finding was created
+    </ResponseField>
+    
+    <ResponseField name="updated_at" type="string">
+      ISO 8601 timestamp of the last update
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "success": true,
+  "data": {
+    "id": "123e4567-e89b-12d3-a456-426614174000",
+    "scan_id": "98765432-e89b-12d3-a456-426614174111",
+    "repo_id": "11111111-e89b-12d3-a456-426614174222",
+    "source": "ai",
+    "status": "open",
+    "severity": "high",
+    "confidence": "high",
+    "title": "SQL Injection vulnerability in user query",
+    "description": "User input is concatenated directly into SQL query without sanitization, allowing potential SQL injection attacks.",
+    "cwe_id": "CWE-89",
+    "cve_id": null,
+    "file_path": "src/database/queries.rs",
+    "line_start": 45,
+    "line_end": 47,
+    "code_snippet": "let query = format!(\"SELECT * FROM users WHERE id = {}\", user_id);",
+    "suggested_patch": null,
+    "poc_exploit_json": null,
+    "poc_validated": false,
+    "fingerprint": "a7f3b9c2d1e4f5a6b7c8d9e0f1a2b3c4",
+    "agent_reasoning": "The code constructs a SQL query using string formatting with unsanitized user input, creating a classic SQL injection vector.",
+    "created_at": "2026-03-12T10:30:00Z",
+    "updated_at": "2026-03-12T10:30:00Z"
+  }
+}
+```
+</ResponseExample>
+
+## Error Responses
+
+<ResponseField name="error" type="object">
+  <Expandable title="Error Properties">
+    <ResponseField name="success" type="boolean">
+      Always `false` for error responses
+    </ResponseField>
+    
+    <ResponseField name="code" type="integer">
+      HTTP status code
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Human-readable error description
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### 404 Not Found
+
+Returned when the specified finding does not exist.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "Finding '123e4567-e89b-12d3-a456-426614174000' not found"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when a database or server error occurs.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to fetch finding: database connection error"
+}
+```

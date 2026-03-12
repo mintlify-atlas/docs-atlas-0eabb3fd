@@ -1,0 +1,132 @@
+---
+title: "Delete Repository"
+api: "DELETE /api/repos/{id}"
+description: "Delete a repository and all associated scan data"
+---
+
+## Authentication
+
+This endpoint requires authentication. You must be the owner of the repository to delete it.
+
+## Path Parameters
+
+<ParamField path="id" type="uuid" required>
+  The unique identifier of the repository to delete.
+</ParamField>
+
+## Authorization
+
+Only the user who created the repository (`user_id` matches the authenticated user) can delete it. Attempts to delete repositories owned by other users will result in a 403 Forbidden error.
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates whether the request was successful.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  Confirmation of the deletion.
+  
+  <Expandable title="Deletion Confirmation">
+    <ResponseField name="id" type="uuid">
+      The ID of the deleted repository.
+    </ResponseField>
+    
+    <ResponseField name="deleted" type="boolean">
+      Always `true` when deletion is successful.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example Request
+
+```bash
+curl -X DELETE https://api.heimdall.example.com/api/repos/01936d2f-8c4e-7890-b123-456789abcdef \
+  -H "Cookie: session=your_session_token"
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "01936d2f-8c4e-7890-b123-456789abcdef",
+    "deleted": true
+  }
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="object">
+  Error information when the request fails.
+  
+  <Expandable title="Error Object">
+    <ResponseField name="success" type="boolean">
+      Always `false` for error responses.
+    </ResponseField>
+    
+    <ResponseField name="code" type="integer">
+      HTTP status code.
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Error message describing what went wrong.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### 401 Unauthorized
+
+Returned when authentication credentials are missing or invalid.
+
+```json
+{
+  "success": false,
+  "code": 401,
+  "message": "Authentication required"
+}
+```
+
+### 403 Forbidden
+
+Returned when the authenticated user does not have permission to delete the repository.
+
+```json
+{
+  "success": false,
+  "code": 403,
+  "message": "You do not have access to this repository"
+}
+```
+
+### 404 Not Found
+
+Returned when the repository with the specified ID does not exist.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "Repo '01936d2f-8c4e-7890-b123-456789abcdef' not found"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when the server encounters an error deleting the repository.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to delete repo: database connection error"
+}
+```
+
+## Notes
+
+- Deleting a repository will also delete all associated scans, findings, and other related data.
+- This operation is permanent and cannot be undone.
+- If you're using HTMX-based requests (with `HX-Request` header), the response will include an `HX-Redirect` header pointing to `/repos`.

@@ -1,0 +1,550 @@
+---
+title: 'Threat Modeling'
+description: 'How Tyr generates STRIDE-based threat models to guide security analysis'
+icon: 'shield'
+---
+
+Tyr is Heimdall's threat modeling engine, named after the Norse god of justice and law. It automatically generates comprehensive threat models using **STRIDE methodology**, identifying attack surfaces, trust boundaries, and sensitive data flows before any vulnerability scanning begins.
+
+## Why Threat Modeling First?
+
+Traditional scanners blindly check for patterns. Heimdall takes a **threat-informed approach**:
+
+<Steps>
+  <Step title="Understand the System" icon="map">
+    Tyr analyzes architecture, tech stack, entry points, and data flows
+  </Step>
+  <Step title="Identify Attack Surfaces" icon="crosshairs">
+    Map every point where untrusted input enters the system
+  </Step>
+  <Step title="Prioritize by Risk" icon="ranking-star">
+    Rank surfaces by exploitability and impact
+  </Step>
+  <Step title="Guide Investigation" icon="route">
+    Hunt agents focus on high-risk areas identified by Tyr
+  </Step>
+</Steps>
+
+<Info>
+  Threat modeling reduces false positives by providing **context**. A SQL query in an internal admin tool has different risk than one in a public API endpoint.
+</Info>
+
+## STRIDE Methodology
+
+Tyr applies the industry-standard STRIDE framework:
+
+<CardGroup cols={2}>
+  <Card title="Spoofing" icon="mask">
+    Can an attacker impersonate another user or component?
+  </Card>
+  <Card title="Tampering" icon="pen-to-square">
+    Can data be modified without authorization?
+  </Card>
+  <Card title="Repudiation" icon="eraser">
+    Can actions occur without being logged or auditable?
+  </Card>
+  <Card title="Information Disclosure" icon="eye">
+    Can sensitive data leak to unauthorized parties?
+  </Card>
+  <Card title="Denial of Service" icon="circle-exclamation">
+    Can the system be made unavailable?
+  </Card>
+  <Card title="Elevation of Privilege" icon="arrow-up">
+    Can an attacker gain higher permissions?
+  </Card>
+</CardGroup>
+
+## Threat Model Structure
+
+Every threat model contains four key components:
+
+### 1. Summary
+
+A high-level analysis of the application's architecture and security posture:
+
+<CodeGroup>
+```json Example Output
+{
+  "summary": "This is a REST API built with Axum (Rust) that provides user authentication, payment processing, and file upload capabilities. The application uses PostgreSQL for data persistence and Redis for session management. Key security controls include bcrypt password hashing, JWT-based authentication, and role-based access control. The primary risks involve the payment webhook handler (which processes untrusted input from external services), the file upload endpoint (which could be exploited for path traversal or malicious file execution), and the admin panel (which has elevated privileges but lacks 2FA)."
+}
+```
+</CodeGroup>
+
+### 2. Trust Boundaries
+
+Points where data crosses between trust zones:
+
+```json
+{
+  "boundaries": [
+    {
+      "name": "Public API Gateway",
+      "description": "HTTP requests from untrusted internet clients to the API server. All user input enters through this boundary.",
+      "from_zone": "Internet (untrusted)",
+      "to_zone": "API Server (semi-trusted)"
+    },
+    {
+      "name": "Database Connection",
+      "description": "SQL queries from the application to PostgreSQL. Injection here could compromise all data.",
+      "from_zone": "API Server",
+      "to_zone": "PostgreSQL Database (trusted)"
+    },
+    {
+      "name": "External Payment Webhook",
+      "description": "Callback from payment provider to application. Source can be spoofed.",
+      "from_zone": "Payment Provider (external)",
+      "to_zone": "API Server"
+    }
+  ]
+}
+```
+
+<Note>
+  Tyr identifies **both external and internal** boundaries. Internal boundaries matter because lateral movement is a common attack vector.
+</Note>
+
+### 3. Attack Surfaces
+
+Every reachable endpoint or input vector, ranked by risk:
+
+```json
+{
+  "surfaces": [
+    {
+      "name": "User registration endpoint",
+      "description": "Accepts email, password, and display name from unauthenticated users. Vulnerable to: Spoofing (fake accounts), Tampering (privilege escalation via hidden fields), Information Disclosure (username enumeration), DoS (bulk registration).",
+      "endpoint": "POST /api/auth/register",
+      "file": "src/api/auth.rs",
+      "line": 45,
+      "risk_level": "high"
+    },
+    {
+      "name": "File upload handler",
+      "description": "Authenticated users can upload files to /uploads directory. Vulnerable to: Tampering (path traversal to overwrite system files), Elevation of Privilege (upload web shell), DoS (exhausting disk space).",
+      "endpoint": "POST /api/files/upload",
+      "file": "src/api/files.rs",
+      "line": 128,
+      "risk_level": "critical"
+    },
+    {
+      "name": "Payment webhook handler",
+      "description": "Receives payment confirmation callbacks from external provider. Vulnerable to: Spoofing (fake payment confirmations), Tampering (amount manipulation), Repudiation (if webhook signature not verified).",
+      "endpoint": "POST /api/webhooks/payment",
+      "file": "src/webhooks/payment.rs",
+      "line": 67,
+      "risk_level": "critical"
+    }
+  ]
+}
+```
+
+<Warning>
+  Each attack surface includes **STRIDE threat categories** and references the **actual source file and line number** from the codebase.
+</Warning>
+
+### 4. Data Flows
+
+How sensitive data moves through the system:
+
+```json
+{
+  "data_flows": [
+    {
+      "name": "User credential submission",
+      "description": "Plaintext password flows from browser over HTTPS to API, hashed with bcrypt, then stored in PostgreSQL. Risk: If TLS is misconfigured or downgraded, credentials can be intercepted.",
+      "source": "User browser",
+      "sink": "PostgreSQL users.password_hash column",
+      "sensitive_data": "Passwords"
+    },
+    {
+      "name": "Payment processing",
+      "description": "Credit card details are submitted to external payment provider via API. The application only stores the last 4 digits and tokenized reference. Risk: If the provider's API key is leaked, an attacker could process fraudulent charges.",
+      "source": "User browser",
+      "sink": "Payment provider API (Stripe)",
+      "sensitive_data": "Credit card numbers, CVV"
+    },
+    {
+      "name": "Admin session tokens",
+      "description": "JWT tokens issued to admin users are stored in Redis with 24-hour TTL. Tokens include role claims. Risk: If Redis is exposed without authentication, an attacker can steal admin sessions.",
+      "source": "API authentication handler",
+      "sink": "Redis session store",
+      "sensitive_data": "Admin session tokens"
+    }
+  ]
+}
+```
+
+## How Tyr Works
+
+Tyr operates in three phases:
+
+### Phase 1: Reconnaissance
+
+Collects structural intelligence from the code index **without any LLM calls**:
+
+```rust src/pipeline/tyr/mod.rs
+fn reconnaissance(&self, index: &CodeIndex) -> ReconOutput {
+    let file_count = index.files.len();
+    let tech_stack = self.detect_tech_stack(index);
+    let entry_points = self.collect_entry_points(index);
+    let dependencies = self.collect_dependencies(index);
+    let routes = self.find_routes(index);
+    let security_patterns = self.find_security_patterns(index);
+    let config_patterns = self.find_config_patterns(index);
+    let db_patterns = self.find_db_patterns(index);
+    
+    ReconOutput {
+        file_count,
+        tech_stack,
+        entry_points,
+        dependencies,
+        routes,
+        security_patterns,
+        config_patterns,
+        db_patterns,
+    }
+}
+```
+
+Detected artifacts include:
+
+<Tabs>
+  <Tab title="Tech Stack">
+    ```text
+    - Rust (342 files)
+    - TypeScript (48 files)
+    - Python (12 files)
+    - Axum (Rust web framework)
+    - React (frontend)
+    - PostgreSQL (database)
+    - Docker
+    - GitHub Actions CI
+    ```
+  </Tab>
+  <Tab title="Entry Points">
+    ```text
+    - function `main` at src/main.rs:15
+    - export route_handler `register_user` at src/api/auth.rs:45
+    - export route_handler `upload_file` at src/api/files.rs:128
+    - export middleware `auth_middleware` at src/middleware/auth.rs:23
+    ```
+  </Tab>
+  <Tab title="Routes">
+    ```text
+    - src/api/auth.rs:45 — .post("/api/auth/register")
+    - src/api/auth.rs:67 — .post("/api/auth/login")
+    - src/api/files.rs:128 — .post("/api/files/upload")
+    - src/webhooks/payment.rs:67 — .post("/api/webhooks/payment")
+    ```
+  </Tab>
+  <Tab title="Security Patterns">
+    ```text
+    [Password handling] in src/auth/mod.rs:
+      src/auth/mod.rs:34 — let hash = bcrypt::hash(password, cost)?;
+    
+    [JWT handling] in src/middleware/auth.rs:
+      src/middleware/auth.rs:45 — let token = decode::<Claims>(&jwt, &key, &validation)?;
+    
+    [SQL query construction] in src/db/users.rs:
+      src/db/users.rs:78 — sqlx::query!("SELECT * FROM users WHERE email = $1", email)
+    ```
+  </Tab>
+</Tabs>
+
+### Phase 2: LLM Analysis
+
+Tyr sends the reconnaissance data to the configured LLM with a structured prompt:
+
+```rust src/pipeline/tyr/mod.rs
+let request = CompletionRequest {
+    model: self.default_model.clone(),
+    messages: vec![
+        Message {
+            role: "system".to_string(),
+            content: TYR_SYSTEM_PROMPT.to_string(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: context, // Built from reconnaissance
+        },
+    ],
+    tools: None,
+    max_tokens: Some(8192),
+    temperature: Some(0.2), // Low temperature for consistency
+};
+
+let response = self.ai.complete(request).await?;
+```
+
+The system prompt instructs Tyr to:
+
+```text src/pipeline/tyr/mod.rs
+You are Tyr, the threat model engine of Heimdall security scanner.
+Named after the Norse god of justice and law, you produce rigorous, structured threat models.
+
+Your analysis methodology follows STRIDE:
+- **S**poofing — can an attacker impersonate another user or component?
+- **T**ampering — can data be modified without authorization?
+- **R**epudiation — can actions occur without being logged/auditable?
+- **I**nformation Disclosure — can sensitive data leak to unauthorized parties?
+- **D**enial of Service — can the system be made unavailable?
+- **E**levation of Privilege — can an attacker gain higher permissions?
+
+Requirements:
+1. Trust Boundaries — identify EVERY point where data crosses between trust zones
+2. Attack Surfaces — list EVERY surface reachable by untrusted input
+3. Data Flows — trace how sensitive data moves through the system
+
+Quality Standards:
+- Reference actual files and endpoints from the codebase
+- Be concrete and specific
+- Every surface must have a risk_level reflecting real exploitability
+- Aim for completeness — missing a real attack surface is worse than including a low-risk one
+```
+
+<Info>
+  Tyr uses a **low temperature (0.2)** for consistent, deterministic output. This is crucial for reliable threat modeling across multiple scans.
+</Info>
+
+### Phase 3: Storage
+
+The threat model is stored in the `threat_models` table:
+
+```sql
+CREATE TABLE threat_models (
+  id UUID PRIMARY KEY,
+  scan_id UUID REFERENCES scans(id),
+  repo_id UUID REFERENCES repos(id),
+  summary TEXT,
+  boundaries_json JSONB,  -- Array of trust boundaries
+  surfaces_json JSONB,    -- Array of attack surfaces
+  data_flows_json JSONB,  -- Array of data flows
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+Query example:
+
+```sql
+SELECT 
+  summary,
+  jsonb_array_length(surfaces_json) as surface_count,
+  jsonb_array_length(boundaries_json) as boundary_count
+FROM threat_models
+WHERE scan_id = 'YOUR_SCAN_ID';
+```
+
+## How It Guides Hunt Agents
+
+Each attack surface becomes an investigation target:
+
+```rust src/pipeline/hunt/mod.rs
+pub async fn run(
+    &self,
+    index: Arc<CodeIndex>,
+    threat_model: &ThreatModelOutput,
+    static_context: &str,
+) -> HeimdallResult<usize> {
+    for surface in &threat_model.surfaces {
+        let handle = tokio::spawn(async move {
+            let mut agent = agent::HuntAgent::new(scan_id, repo_id, db, ai, model);
+            agent.investigate(&surface, &index, &ctx).await
+        });
+        handles.push(handle);
+    }
+    
+    // Wait for all agents to complete
+    // ...
+}
+```
+
+Each Hunt agent receives:
+
+- **Surface name:** "Payment webhook handler"
+- **Description:** Full STRIDE analysis with threat categories
+- **Risk level:** Priority signal (critical/high/medium/low)
+- **File location:** `src/webhooks/payment.rs:67`
+- **Endpoint:** `POST /api/webhooks/payment`
+
+<Note>
+  High-risk surfaces get the same investigation depth as low-risk ones. The risk level helps with **reporting priority**, not investigation scope.
+</Note>
+
+## Example Threat Model
+
+Here's a real threat model generated for a payment processing API:
+
+<Accordion title="View Full Threat Model" icon="file-code">
+```json
+{
+  "summary": "This is a payment processing REST API built with Axum that handles user authentication, subscription management, and Stripe webhook callbacks. The application uses PostgreSQL for persistence and Redis for session caching. Security controls include JWT authentication, role-based access control, and webhook signature verification. The highest risks are: (1) the Stripe webhook handler, which processes external callbacks and could be exploited if signature verification fails; (2) the subscription upgrade endpoint, which modifies payment amounts and could enable price manipulation; (3) the admin user management panel, which lacks 2FA and could be targeted for account takeover.",
+  
+  "boundaries": [
+    {
+      "name": "Public API Gateway",
+      "description": "All HTTP requests from internet clients enter through this boundary. Authentication and rate limiting occur here.",
+      "from_zone": "Internet (untrusted)",
+      "to_zone": "API Server"
+    },
+    {
+      "name": "Stripe Webhook Callback",
+      "description": "Payment events from Stripe servers to the application webhook endpoint. Must verify HMAC signature.",
+      "from_zone": "Stripe (external trusted)",
+      "to_zone": "API Server"
+    },
+    {
+      "name": "Database Layer",
+      "description": "SQL queries from application to PostgreSQL. Parameterized queries prevent injection.",
+      "from_zone": "API Server",
+      "to_zone": "PostgreSQL (trusted)"
+    },
+    {
+      "name": "Redis Session Cache",
+      "description": "Session tokens stored in Redis. If exposed, enables session hijacking.",
+      "from_zone": "API Server",
+      "to_zone": "Redis (trusted)"
+    }
+  ],
+  
+  "surfaces": [
+    {
+      "name": "Stripe webhook handler",
+      "description": "Receives payment event notifications from Stripe. Vulnerable to: Spoofing (if signature verification fails), Tampering (modifying event data), Repudiation (if events aren't logged). Must verify webhook signature on every request.",
+      "endpoint": "POST /api/webhooks/stripe",
+      "file": "src/webhooks/stripe.rs",
+      "line": 34,
+      "risk_level": "critical"
+    },
+    {
+      "name": "Subscription upgrade endpoint",
+      "description": "Authenticated users can upgrade their subscription tier. Vulnerable to: Tampering (price manipulation via hidden fields), Elevation of Privilege (upgrading to admin-only tiers), Information Disclosure (probing for valid plan IDs).",
+      "endpoint": "POST /api/subscriptions/upgrade",
+      "file": "src/api/subscriptions.rs",
+      "line": 89,
+      "risk_level": "high"
+    },
+    {
+      "name": "Admin user management panel",
+      "description": "Admin users can create, modify, and delete other users. Vulnerable to: Spoofing (if admin session tokens are weak), Elevation of Privilege (creating new admin accounts), Information Disclosure (listing all users with PII). Currently lacks 2FA.",
+      "endpoint": "GET/POST /api/admin/users",
+      "file": "src/api/admin/users.rs",
+      "line": 23,
+      "risk_level": "high"
+    },
+    {
+      "name": "User authentication endpoint",
+      "description": "Login handler for regular users. Vulnerable to: Spoofing (credential stuffing), Information Disclosure (username enumeration via timing), DoS (brute force without rate limiting).",
+      "endpoint": "POST /api/auth/login",
+      "file": "src/api/auth.rs",
+      "line": 67,
+      "risk_level": "medium"
+    }
+  ],
+  
+  "data_flows": [
+    {
+      "name": "Payment credentials to Stripe",
+      "description": "Credit card data flows from user browser directly to Stripe via their JavaScript SDK. The application only receives a tokenized reference, never raw card data. Risk: If Stripe SDK is compromised via XSS, card data could be exfiltrated.",
+      "source": "User browser",
+      "sink": "Stripe API",
+      "sensitive_data": "Credit card numbers, CVV"
+    },
+    {
+      "name": "Subscription status updates",
+      "description": "When a payment succeeds or fails, Stripe sends a webhook callback containing customer ID, subscription ID, and amount. This data updates the subscriptions table. Risk: If webhook signature isn't verified, an attacker can forge subscription activations.",
+      "source": "Stripe webhook",
+      "sink": "PostgreSQL subscriptions table",
+      "sensitive_data": "Subscription status, payment amounts"
+    },
+    {
+      "name": "User session tokens",
+      "description": "JWT tokens are issued after successful login and stored in Redis with a 24-hour TTL. Tokens include user ID and role. Risk: If Redis has no password or is exposed, session tokens can be stolen.",
+      "source": "Authentication handler",
+      "sink": "Redis cache",
+      "sensitive_data": "Session tokens, user roles"
+    }
+  ]
+}
+```
+</Accordion>
+
+## Viewing Threat Models
+
+Access threat models through the API:
+
+<CodeGroup>
+```bash cURL
+curl https://app.heimdall.security/api/v1/scans/{scan_id}/threat-model \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+```typescript SDK
+const threatModel = await heimdall.scans.getThreatModel(scanId);
+
+console.log(`Found ${threatModel.surfaces.length} attack surfaces`);
+console.log(`Risk breakdown:`);
+
+const bySeverity = threatModel.surfaces.reduce((acc, s) => {
+  acc[s.risk_level] = (acc[s.risk_level] || 0) + 1;
+  return acc;
+}, {});
+
+console.log(bySeverity);
+// Output: { critical: 2, high: 5, medium: 8, low: 3 }
+```
+
+```sql PostgreSQL
+SELECT 
+  s.name,
+  s.risk_level,
+  s.endpoint,
+  s.file,
+  s.description
+FROM threat_models tm,
+  jsonb_to_recordset(tm.surfaces_json) AS s(
+    name TEXT,
+    risk_level TEXT,
+    endpoint TEXT,
+    file TEXT,
+    description TEXT
+  )
+WHERE tm.scan_id = 'YOUR_SCAN_ID'
+ORDER BY 
+  CASE s.risk_level
+    WHEN 'critical' THEN 0
+    WHEN 'high' THEN 1
+    WHEN 'medium' THEN 2
+    WHEN 'low' THEN 3
+  END;
+```
+</CodeGroup>
+
+## Performance
+
+Tyr typically completes in **30-120 seconds** depending on codebase size:
+
+- **Reconnaissance:** 5-15 seconds (no LLM calls)
+- **LLM analysis:** 20-90 seconds (depends on model and prompt size)
+- **Storage:** < 1 second
+
+<Info>
+  Tyr's reconnaissance phase is **completely free** — no LLM costs until Phase 2.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Hunt Agent" icon="crosshairs" href="/features/hunt-agent">
+    See how Hunt uses threat models to guide investigations
+  </Card>
+  <Card title="Scan Pipeline" icon="gears" href="/features/scan-pipeline">
+    Understand where Tyr fits in the complete workflow
+  </Card>
+  <Card title="Findings Management" icon="list-check" href="/features/findings-management">
+    Review and remediate discovered vulnerabilities
+  </Card>
+  <Card title="Sandbox Validation" icon="flask" href="/features/sandbox-validation">
+    Learn how Garmr validates findings with real exploits
+  </Card>
+</CardGroup>

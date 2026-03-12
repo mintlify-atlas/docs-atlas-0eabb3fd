@@ -1,0 +1,221 @@
+---
+title: "Get Scan Findings"
+api: "GET /api/scans/{id}/findings"
+description: "Retrieve paginated findings for a specific scan with optional filtering"
+---
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier (UUID) of the scan
+</ParamField>
+
+## Query Parameters
+
+<ParamField query="severity" type="string" optional>
+  Filter findings by severity level. Possible values:
+  - `critical` - Critical severity vulnerabilities
+  - `high` - High severity vulnerabilities
+  - `medium` - Medium severity vulnerabilities
+  - `low` - Low severity vulnerabilities
+</ParamField>
+
+<ParamField query="status" type="string" optional>
+  Filter findings by status. Possible values:
+  - `open` - Newly discovered findings
+  - `confirmed` - Manually confirmed as valid
+  - `dismissed` - Dismissed by user
+  - `false_positive` - Marked as false positive
+  - `fixed` - Vulnerability has been fixed
+</ParamField>
+
+<ParamField query="page" type="integer" optional default="1">
+  Page number for pagination (minimum: 1)
+</ParamField>
+
+<ParamField query="per_page" type="integer" optional default="25">
+  Number of items per page (minimum: 1, maximum: 100)
+</ParamField>
+
+## Response
+
+Returns a paginated list of findings:
+
+<ResponseField name="items" type="array">
+  Array of finding objects
+  
+  <Expandable title="Finding Object">
+    <ResponseField name="id" type="string">
+      Unique identifier (UUID) of the finding
+    </ResponseField>
+    
+    <ResponseField name="scan_id" type="string">
+      ID of the scan that discovered this finding
+    </ResponseField>
+    
+    <ResponseField name="repo_id" type="string">
+      ID of the repository
+    </ResponseField>
+    
+    <ResponseField name="source" type="string">
+      Source of the finding: `ai`, `static`, or `dependencies`
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      Current status of the finding
+    </ResponseField>
+    
+    <ResponseField name="severity" type="string">
+      Severity level: `critical`, `high`, `medium`, or `low`
+    </ResponseField>
+    
+    <ResponseField name="confidence" type="string">
+      Confidence level: `high`, `medium`, or `low`
+    </ResponseField>
+    
+    <ResponseField name="title" type="string">
+      Brief title describing the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="description" type="string" optional>
+      Detailed description of the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="cwe_id" type="string" optional>
+      Common Weakness Enumeration identifier (e.g., "CWE-89")
+    </ResponseField>
+    
+    <ResponseField name="cve_id" type="string" optional>
+      Common Vulnerabilities and Exposures identifier (e.g., "CVE-2024-1234")
+    </ResponseField>
+    
+    <ResponseField name="file_path" type="string">
+      Path to the vulnerable file
+    </ResponseField>
+    
+    <ResponseField name="line_start" type="integer">
+      Starting line number of the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="line_end" type="integer" optional>
+      Ending line number of the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="code_snippet" type="string" optional>
+      Code snippet showing the vulnerability
+    </ResponseField>
+    
+    <ResponseField name="suggested_patch" type="string" optional>
+      AI-generated patch suggestion
+    </ResponseField>
+    
+    <ResponseField name="poc_exploit_json" type="object" optional>
+      Proof-of-concept exploit details (JSON)
+    </ResponseField>
+    
+    <ResponseField name="poc_validated" type="boolean">
+      Whether the PoC exploit has been validated
+    </ResponseField>
+    
+    <ResponseField name="fingerprint" type="string">
+      Unique fingerprint for deduplication
+    </ResponseField>
+    
+    <ResponseField name="agent_reasoning" type="string" optional>
+      AI agent's reasoning for flagging this finding
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp when the finding was created
+    </ResponseField>
+    
+    <ResponseField name="updated_at" type="string">
+      ISO 8601 timestamp when the finding was last updated
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of findings matching the filters
+</ResponseField>
+
+<ResponseField name="page" type="integer">
+  Current page number
+</ResponseField>
+
+<ResponseField name="per_page" type="integer">
+  Number of items per page
+</ResponseField>
+
+<ResponseField name="total_pages" type="integer">
+  Total number of pages available
+</ResponseField>
+
+<RequestExample>
+
+```bash cURL
+curl -X GET "https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/findings?severity=critical&page=1&per_page=10" \
+  -H "Authorization: Bearer YOUR_API_TOKEN"
+```
+
+```bash Filter by Status
+curl -X GET "https://api.heimdall.dev/api/scans/550e8400-e29b-41d4-a716-446655440000/findings?status=open&severity=high" \
+  -H "Authorization: Bearer YOUR_API_TOKEN"
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": "3f7a8b9c-0d1e-2f3a-4b5c-6d7e8f9a0b1c",
+        "scan_id": "550e8400-e29b-41d4-a716-446655440000",
+        "repo_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "source": "ai",
+        "status": "open",
+        "severity": "critical",
+        "confidence": "high",
+        "title": "SQL Injection in user authentication",
+        "description": "User input is directly concatenated into SQL query without sanitization",
+        "cwe_id": "CWE-89",
+        "cve_id": null,
+        "file_path": "src/auth/login.rs",
+        "line_start": 42,
+        "line_end": 45,
+        "code_snippet": "let query = format!(\"SELECT * FROM users WHERE email = '{}'\", email);",
+        "suggested_patch": "Use parameterized queries: sqlx::query!(\"SELECT * FROM users WHERE email = $1\", email)",
+        "poc_exploit_json": {
+          "payload": "' OR '1'='1",
+          "description": "Authentication bypass via boolean injection"
+        },
+        "poc_validated": true,
+        "fingerprint": "abc123def456",
+        "agent_reasoning": "Direct string concatenation in SQL query creates SQL injection vulnerability",
+        "created_at": "2026-03-12T10:05:23Z",
+        "updated_at": "2026-03-12T10:05:23Z"
+      }
+    ],
+    "total": 5,
+    "page": 1,
+    "per_page": 10,
+    "total_pages": 1
+  }
+}
+```
+
+```json 500
+{
+  "success": false,
+  "error": {
+    "code": 500,
+    "message": "Failed to list findings: database error"
+  }
+}
+```
+
+</ResponseExample>

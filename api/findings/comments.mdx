@@ -1,0 +1,304 @@
+---
+title: "Comments & Events"
+description: "Add comments to findings and retrieve event history"
+---
+
+Manage finding comments and retrieve the complete event timeline for a security finding.
+
+## Add Comment
+
+<api>
+  POST /api/findings/{id}/comment
+</api>
+
+Add a comment to a finding to document observations, questions, or triage decisions.
+
+<Note>
+  This endpoint requires authentication. Comments are associated with the authenticated user.
+</Note>
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique UUID of the finding to comment on
+</ParamField>
+
+### Request Body
+
+<ParamField body="comment" type="string" required>
+  The comment text to add. Markdown formatting is preserved.
+</ParamField>
+
+<RequestExample>
+```json
+{
+  "comment": "Reviewed with security team. This appears to be a false positive due to input validation happening in the middleware layer."
+}
+```
+</RequestExample>
+
+### Response
+
+Returns the created comment event.
+
+<ResponseField name="data" type="object">
+  The finding event object representing the comment
+  
+  <Expandable title="Event Properties">
+    <ResponseField name="id" type="string">
+      Unique identifier for the event
+    </ResponseField>
+    
+    <ResponseField name="finding_id" type="string">
+      UUID of the finding this comment belongs to
+    </ResponseField>
+    
+    <ResponseField name="user_id" type="string">
+      UUID of the user who created the comment
+    </ResponseField>
+    
+    <ResponseField name="event_type" type="string">
+      Always `comment` for comment events
+    </ResponseField>
+    
+    <ResponseField name="old_value" type="string" nullable>
+      Always `null` for comments
+    </ResponseField>
+    
+    <ResponseField name="new_value" type="string" nullable>
+      Always `null` for comments
+    </ResponseField>
+    
+    <ResponseField name="comment" type="string">
+      The comment text
+    </ResponseField>
+    
+    <ResponseField name="metadata" type="object" nullable>
+      Additional structured data (typically `null` for comments)
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp when the comment was created
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "success": true,
+  "data": {
+    "id": "987e6543-e89b-12d3-a456-426614174999",
+    "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+    "user_id": "555e5555-e89b-12d3-a456-426614175555",
+    "event_type": "comment",
+    "old_value": null,
+    "new_value": null,
+    "comment": "Reviewed with security team. This appears to be a false positive due to input validation happening in the middleware layer.",
+    "metadata": null,
+    "created_at": "2026-03-12T16:20:00Z"
+  }
+}
+```
+</ResponseExample>
+
+### Error Responses
+
+#### 404 Not Found
+
+Returned when the specified finding does not exist.
+
+```json
+{
+  "success": false,
+  "code": 404,
+  "message": "Finding '123e4567-e89b-12d3-a456-426614174000' not found"
+}
+```
+
+#### 500 Internal Server Error
+
+Returned when the comment cannot be created.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to add comment: database connection error"
+}
+```
+
+---
+
+## List Events
+
+<api>
+  GET /api/findings/{id}/events
+</api>
+
+Retrieve the complete event history for a finding, including status changes, severity updates, comments, patch applications, and AI reviews.
+
+### Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique UUID of the finding whose events should be retrieved
+</ParamField>
+
+### Response
+
+Returns an array of all events associated with the finding, ordered chronologically.
+
+<ResponseField name="data" type="array">
+  Array of finding events
+  
+  <Expandable title="Event Object">
+    <ResponseField name="id" type="string">
+      Unique identifier for the event
+    </ResponseField>
+    
+    <ResponseField name="finding_id" type="string">
+      UUID of the associated finding
+    </ResponseField>
+    
+    <ResponseField name="user_id" type="string" nullable>
+      UUID of the user who triggered this event (null for system events)
+    </ResponseField>
+    
+    <ResponseField name="event_type" type="string">
+      Type of event:
+      - `status_change` - Finding status was updated
+      - `severity_change` - Severity level was modified
+      - `comment` - User added a comment
+      - `patch_applied` - A patch was marked as applied
+      - `ai_explanation` - AI generated an explanation
+      - `ai_verification` - AI performed verification review
+      - `issue_linked` - Repository issue was linked
+    </ResponseField>
+    
+    <ResponseField name="old_value" type="string" nullable>
+      Previous value before the change (for status/severity changes)
+    </ResponseField>
+    
+    <ResponseField name="new_value" type="string" nullable>
+      New value after the change (for status/severity changes)
+    </ResponseField>
+    
+    <ResponseField name="comment" type="string" nullable>
+      Associated comment text
+    </ResponseField>
+    
+    <ResponseField name="metadata" type="object" nullable>
+      Additional structured data about the event. Contains AI review results for `ai_explanation` and `ai_verification` events.
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp when the event occurred
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "111e1111-e89b-12d3-a456-426614174001",
+      "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+      "user_id": null,
+      "event_type": "status_change",
+      "old_value": null,
+      "new_value": "open",
+      "comment": "Finding created",
+      "metadata": null,
+      "created_at": "2026-03-12T10:30:00Z"
+    },
+    {
+      "id": "222e2222-e89b-12d3-a456-426614174002",
+      "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+      "user_id": "555e5555-e89b-12d3-a456-426614175555",
+      "event_type": "severity_change",
+      "old_value": "medium",
+      "new_value": "high",
+      "comment": null,
+      "metadata": null,
+      "created_at": "2026-03-12T14:30:00Z"
+    },
+    {
+      "id": "333e3333-e89b-12d3-a456-426614174003",
+      "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+      "user_id": "555e5555-e89b-12d3-a456-426614175555",
+      "event_type": "comment",
+      "old_value": null,
+      "new_value": null,
+      "comment": "Reviewed with security team. This appears to be a false positive.",
+      "metadata": null,
+      "created_at": "2026-03-12T16:20:00Z"
+    },
+    {
+      "id": "444e4444-e89b-12d3-a456-426614174004",
+      "finding_id": "123e4567-e89b-12d3-a456-426614174000",
+      "user_id": "555e5555-e89b-12d3-a456-426614175555",
+      "event_type": "status_change",
+      "old_value": "open",
+      "new_value": "false_positive",
+      "comment": null,
+      "metadata": null,
+      "created_at": "2026-03-12T16:25:00Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+### Error Responses
+
+#### 500 Internal Server Error
+
+Returned when the events cannot be retrieved.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to list finding events: database connection error"
+}
+```
+
+<Info>
+  The events endpoint does not return a 404 error if the finding doesn't exist. Instead, it returns an empty array. To verify a finding exists, use the [Get Finding](/api/findings/get) endpoint.
+</Info>
+
+## Event Types Reference
+
+Here's a complete reference of all event types you may encounter:
+
+<AccordionGroup>
+  <Accordion title="status_change">
+    Triggered when a finding's triage status is updated. The `old_value` and `new_value` fields contain the previous and new status values.
+  </Accordion>
+  
+  <Accordion title="severity_change">
+    Triggered when a finding's severity level is modified. The `old_value` and `new_value` fields contain the previous and new severity values.
+  </Accordion>
+  
+  <Accordion title="comment">
+    Triggered when a user adds a comment to a finding. The comment text is stored in the `comment` field.
+  </Accordion>
+  
+  <Accordion title="patch_applied">
+    Triggered when a security patch is marked as applied. The `new_value` field contains the patch UUID.
+  </Accordion>
+  
+  <Accordion title="ai_explanation">
+    Triggered when AI generates a plain-language explanation of the finding. The `metadata` field contains the AI's analysis including summary, why it was flagged, what to review, and remediation focus.
+  </Accordion>
+  
+  <Accordion title="ai_verification">
+    Triggered when AI performs a verification review to determine if the finding is a true positive. The `metadata` field contains verdict, rationale, signals, and recommended status.
+  </Accordion>
+  
+  <Accordion title="issue_linked">
+    Triggered when a repository issue (GitHub/GitLab) is linked to the finding. The `metadata` field contains provider, issue URL, issue number, and creation status.
+  </Accordion>
+</AccordionGroup>

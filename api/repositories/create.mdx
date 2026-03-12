@@ -1,0 +1,209 @@
+---
+title: "Create Repository"
+api: "POST /api/repos"
+description: "Create a new repository to track and scan for security vulnerabilities"
+---
+
+## Authentication
+
+This endpoint requires authentication. Include your session token in the request cookies or headers.
+
+## Request Body
+
+<ParamField body="name" type="string" required>
+  Name of the repository. This will be displayed in the Heimdall dashboard.
+</ParamField>
+
+<ParamField body="source_type" type="string">
+  Type of repository source. Defaults to `git_url` if not specified.
+  
+  <Expandable title="Source Types">
+    - `github` - GitHub repository connected via OAuth
+    - `gitlab` - GitLab repository connected via OAuth
+    - `git_url` - Generic Git repository URL
+    - `zip` - Uploaded ZIP file containing source code
+  </Expandable>
+</ParamField>
+
+<ParamField body="remote_url" type="string">
+  Remote URL of the Git repository. Required for `git_url` source type. Optional for OAuth-based sources.
+</ParamField>
+
+<ParamField body="default_branch" type="string">
+  Default branch to scan. If not specified, the repository's default branch will be used (typically `main` or `master`).
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates whether the request was successful.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The created repository object.
+  
+  <Expandable title="Repository Object">
+    <ResponseField name="id" type="uuid">
+      Unique identifier for the repository.
+    </ResponseField>
+    
+    <ResponseField name="user_id" type="uuid">
+      ID of the user who created the repository.
+    </ResponseField>
+    
+    <ResponseField name="org_id" type="uuid" optional>
+      ID of the organization this repository belongs to, if applicable.
+    </ResponseField>
+    
+    <ResponseField name="name" type="string">
+      Name of the repository.
+    </ResponseField>
+    
+    <ResponseField name="source_type" type="string">
+      Type of repository source (github, gitlab, git_url, or zip).
+    </ResponseField>
+    
+    <ResponseField name="remote_url" type="string" optional>
+      Remote URL of the repository.
+    </ResponseField>
+    
+    <ResponseField name="default_branch" type="string" optional>
+      Default branch for scanning.
+    </ResponseField>
+    
+    <ResponseField name="last_commit_sha" type="string" optional>
+      SHA of the last commit scanned.
+    </ResponseField>
+    
+    <ResponseField name="oauth_connection_id" type="uuid" optional>
+      ID of the OAuth connection used for authentication, if applicable.
+    </ResponseField>
+    
+    <ResponseField name="issue_auto_create_enabled" type="boolean">
+      Whether automatic issue creation is enabled.
+    </ResponseField>
+    
+    <ResponseField name="issue_auto_create_min_severity" type="string">
+      Minimum severity level for automatic issue creation (critical, high, medium, or low).
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="datetime">
+      Timestamp when the repository was created.
+    </ResponseField>
+    
+    <ResponseField name="updated_at" type="datetime">
+      Timestamp when the repository was last updated.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example Request
+
+### Git URL Repository
+
+```bash
+curl -X POST https://api.heimdall.example.com/api/repos \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=your_session_token" \
+  -d '{
+    "name": "my-web-app",
+    "source_type": "git_url",
+    "remote_url": "https://github.com/example/my-web-app.git",
+    "default_branch": "main"
+  }'
+```
+
+### GitHub OAuth Repository
+
+```bash
+curl -X POST https://api.heimdall.example.com/api/repos \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=your_session_token" \
+  -d '{
+    "name": "my-github-repo",
+    "source_type": "github",
+    "remote_url": "https://github.com/example/my-github-repo.git"
+  }'
+```
+
+### GitLab OAuth Repository
+
+```bash
+curl -X POST https://api.heimdall.example.com/api/repos \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=your_session_token" \
+  -d '{
+    "name": "my-gitlab-project",
+    "source_type": "gitlab",
+    "remote_url": "https://gitlab.com/example/my-gitlab-project.git",
+    "default_branch": "develop"
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "01936d2f-8c4e-7890-b123-456789abcdef",
+    "user_id": "01936d2e-1234-5678-9abc-def012345678",
+    "org_id": null,
+    "name": "my-web-app",
+    "source_type": "git_url",
+    "remote_url": "https://github.com/example/my-web-app.git",
+    "default_branch": "main",
+    "last_commit_sha": null,
+    "oauth_connection_id": null,
+    "issue_auto_create_enabled": false,
+    "issue_auto_create_min_severity": "high",
+    "created_at": "2026-03-12T10:30:00Z",
+    "updated_at": "2026-03-12T10:30:00Z",
+    "deleted_at": null
+  }
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="object">
+  Error information when the request fails.
+  
+  <Expandable title="Error Object">
+    <ResponseField name="success" type="boolean">
+      Always `false` for error responses.
+    </ResponseField>
+    
+    <ResponseField name="code" type="integer">
+      HTTP status code.
+    </ResponseField>
+    
+    <ResponseField name="message" type="string">
+      Error message describing what went wrong.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### 401 Unauthorized
+
+Returned when authentication credentials are missing or invalid.
+
+```json
+{
+  "success": false,
+  "code": 401,
+  "message": "Authentication required"
+}
+```
+
+### 500 Internal Server Error
+
+Returned when the server encounters an error creating the repository.
+
+```json
+{
+  "success": false,
+  "code": 500,
+  "message": "Failed to create repo: database connection error"
+}
+```
