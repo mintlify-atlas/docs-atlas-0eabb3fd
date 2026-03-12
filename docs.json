@@ -84,6 +84,8 @@
             "pages": [
               "api/authentication/register",
               "api/authentication/login",
+              "api/authentication/logout",
+              "api/authentication/me",
               "api/authentication/oauth"
             ]
           },
@@ -110,6 +112,7 @@
             "group": "Findings",
             "pages": [
               "api/findings/get",
+              "api/findings/update-status",
               "api/findings/update-severity",
               "api/findings/apply-patch",
               "api/findings/comments"

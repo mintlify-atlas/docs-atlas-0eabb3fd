@@ -1,0 +1,119 @@
+---
+title: 'Logout'
+api: 'POST /api/auth/logout'
+description: 'End the current session and invalidate the session token'
+---
+
+## Endpoint
+
+Destroys the current session and invalidates the session token. After logout, the token can no longer be used to authenticate requests.
+
+## Authentication
+
+Requires a valid session token via:
+- `Authorization: Bearer <token>` header, or
+- `heimdall_session` cookie
+
+## Request
+
+No request body required.
+
+### Example
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://heimdall.example.com/api/auth/logout \
+  -H "Authorization: Bearer <your_session_token>"
+```
+
+```javascript JavaScript
+const response = await fetch('https://heimdall.example.com/api/auth/logout', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer <your_session_token>'
+  }
+});
+
+const data = await response.json();
+console.log(data);
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    'https://heimdall.example.com/api/auth/logout',
+    headers={'Authorization': 'Bearer <your_session_token>'}
+)
+
+print(response.json())
+```
+
+</CodeGroup>
+
+## Response
+
+### Success Response
+
+<ResponseField name="success" type="boolean">
+  Always `true` for successful logout
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="properties">
+    <ResponseField name="message" type="string">
+      Success message (always "Logged out")
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "Logged out"
+  }
+}
+```
+
+### Error Responses
+
+<AccordionGroup>
+  <Accordion title="401 Unauthorized - No token provided">
+    ```json
+    {
+      "success": false,
+      "error": {
+        "code": 401,
+        "message": "No session token provided"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 Internal Server Error">
+    ```json
+    {
+      "success": false,
+      "error": {
+        "code": 500,
+        "message": "Internal server error"
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Notes
+
+- Logout is idempotent — calling it multiple times with the same token (even after invalidation) returns success
+- Invalid or expired tokens also receive a 200 success response
+- After logout, the session is permanently deleted from the database
+- If using cookies, the client should clear the `heimdall_session` cookie after receiving the logout response
+
+## Related Endpoints
+
+- [Login](/api/authentication/login) - Authenticate and create a session
+- [Register](/api/authentication/register) - Create a new account
+- [Get Current User](/api/authentication/me) - Get current user details

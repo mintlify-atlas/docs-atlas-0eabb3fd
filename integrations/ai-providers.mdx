@@ -372,8 +372,7 @@ Response:
 
 1. **Use Claude Sonnet** (not Opus) for most scans — it's 5× cheaper
 2. **Configure Ollama as fallback** to avoid overage charges
-3. **Set model per-scan** via API (not yet implemented — coming soon)
-4. **Monitor usage**:
+3. **Monitor usage**:
    ```sql
    SELECT provider, model, COUNT(*) as calls, AVG(input_tokens) as avg_input, AVG(output_tokens) as avg_output
    FROM agent_tool_calls
