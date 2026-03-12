@@ -1,0 +1,151 @@
+{
+  "projectType": "saas",
+  "projectName": "Heimdall",
+  "projectDescription": "Agentic, context-aware security scanner for source code repositories with AI-powered vulnerability discovery and automated patch generation.",
+  "theme": "aspen",
+  "primaryColor": "#1e40af",
+  "lightColor": "#3b82f6",
+  "darkColor": "#1e3a8a",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "how-it-works",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "quickstart",
+              "installation",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/scan-pipeline",
+              "features/hunt-agent",
+              "features/threat-modeling",
+              "features/sandbox-validation",
+              "features/findings-management"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/production",
+              "deployment/reverse-proxy"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/github",
+              "integrations/gitlab",
+              "integrations/webhooks",
+              "integrations/ai-providers"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/schema-dsl",
+              "advanced/custom-rules",
+              "advanced/supported-languages"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/authentication/register",
+              "api/authentication/login",
+              "api/authentication/oauth"
+            ]
+          },
+          {
+            "group": "Repositories",
+            "pages": [
+              "api/repositories/create",
+              "api/repositories/get",
+              "api/repositories/delete",
+              "api/repositories/scan"
+            ]
+          },
+          {
+            "group": "Scans",
+            "pages": [
+              "api/scans/get",
+              "api/scans/cancel",
+              "api/scans/findings",
+              "api/scans/threat-model",
+              "api/scans/progress"
+            ]
+          },
+          {
+            "group": "Findings",
+            "pages": [
+              "api/findings/get",
+              "api/findings/update-severity",
+              "api/findings/apply-patch",
+              "api/findings/comments"
+            ]
+          },
+          {
+            "group": "Settings",
+            "pages": [
+              "api/settings/get",
+              "api/settings/profile",
+              "api/settings/api-keys",
+              "api/settings/test-connection"
+            ]
+          },
+          {
+            "group": "Webhooks",
+            "pages": [
+              "api/webhooks/github",
+              "api/webhooks/gitlab"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered vulnerability discovery with Hunt agent",
+    "7-stage security scan pipeline",
+    "Automated threat modeling with Tyr",
+    "Sandbox validation with Garmr (Docker)",
+    "Automated patch generation",
+    "GitHub and GitLab integration",
+    "Multi-language support (Rust, Python, JavaScript, TypeScript, Go, Java)",
+    "Fallback AI provider chain (Claude, OpenAI, Ollama)",
+    "Real-time scan progress via SSE"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/register",
+    "POST /api/auth/login",
+    "POST /api/repos",
+    "POST /api/repos/{id}/scan",
+    "GET /api/scans/{id}",
+    "GET /api/scans/{id}/findings",
+    "GET /api/scans/{id}/progress/stream",
+    "GET /api/findings/{id}",
+    "POST /api/findings/{id}/apply-patch",
+    "POST /api/settings/api-keys",
+    "POST /webhooks/github",
+    "POST /webhooks/gitlab"
+  ]
+}
